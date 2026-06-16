@@ -11,7 +11,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 from term_corrector import Cue, parse_srt, write_srt
@@ -92,7 +92,13 @@ def clean_punctuation(text: str, punctuation: str) -> str:
 
 # ── LLM helpers ────────────────────────────────────────────────────────────────
 
-def chat_completion(messages: list[dict[str, str]], model: str, base_url: str, api_key: str) -> str:
+def chat_completion(
+    messages: list[dict[str, str]],
+    model: str,
+    base_url: str,
+    api_key: str,
+    timeout: int = 45,
+) -> str:
     url = base_url.rstrip("/") + "/chat/completions"
     payload: dict[str, Any] = {
         "model": model,
@@ -111,11 +117,13 @@ def chat_completion(messages: list[dict[str, str]], model: str, base_url: str, a
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=120) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise SubtitleOptimizerError(f"LLM request failed: {exc.code} {detail[:1000]}") from exc
+    except (TimeoutError, urllib.error.URLError, OSError) as exc:
+        raise SubtitleOptimizerError(f"LLM request failed: {exc}") from exc
     try:
         return data["choices"][0]["message"]["content"]
     except Exception as exc:
@@ -294,6 +302,10 @@ def optimize_srt(
     api_key: str | None,
     use_llm: bool = True,
     allow_neighbor_rewrite: bool = False,
+    llm_timeout: int = 45,
+    max_consecutive_llm_failures: int = 3,
+    fallback_on_llm_error: bool = True,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     cues = parse_srt(srt)
 
@@ -311,6 +323,15 @@ def optimize_srt(
     overlong_indices = [
         idx for idx, cue in enumerate(cleaned_cues) if visible_len("".join(cue.lines)) > max_chars
     ]
+    if progress_callback:
+        progress_callback({
+            "status": "planned",
+            "message": "overlong subtitles identified",
+            "cue_count": len(cleaned_cues),
+            "punctuation_changed_cue_count": len(punctuation_changes),
+            "overlong_detected_count": len(overlong_indices),
+            "use_llm": use_llm,
+        })
 
     if use_llm and overlong_indices and not api_key:
         raise SubtitleOptimizerError("Overlong subtitle splitting requires an API key.")
@@ -319,34 +340,86 @@ def optimize_srt(
     split_results: dict[int, list[str]] = {}  # cue_idx -> segments
     neighbor_results: dict[int, list[str]] = {}  # cue_idx -> new segments (for neighbor rewrites)
     overlong_changes: list[dict[str, Any]] = []
+    llm_errors: list[dict[str, Any]] = []
 
     if use_llm:
         final_cues = list(cleaned_cues)
-        for idx in overlong_indices:
+        consecutive_llm_failures = 0
+        llm_disabled = False
+        for position, idx in enumerate(overlong_indices, start=1):
             cue = final_cues[idx]
             before = " ".join(cue.lines)
             prev_text = " ".join(final_cues[idx - 1].lines) if idx > 0 else ""
             next_text = " ".join(final_cues[idx + 1].lines) if idx + 1 < len(final_cues) else ""
 
-            raw = chat_completion(
-                build_messages(prev_text, before, next_text, max_chars, allow_neighbor_rewrite),
-                model=model, base_url=base_url, api_key=api_key or "",
-            )
+            if progress_callback:
+                progress_callback({
+                    "status": "progress",
+                    "message": "optimizing overlong subtitle",
+                    "current": position,
+                    "total": len(overlong_indices),
+                    "cue": cue.index,
+                    "percent": round(position * 100 / max(1, len(overlong_indices))),
+                    "mode": "local_fallback" if llm_disabled else "llm",
+                })
 
-            if allow_neighbor_rewrite:
-                prev_segs, segs, next_segs = normalize_window_payload(raw, prev_text, before, next_text)
-                if idx > 0 and prev_segs and prev_segs != [prev_text]:
-                    neighbor_results[idx - 1] = enforce_max_chars(
-                        [clean_punctuation(s, punctuation) for s in prev_segs],
-                        max_chars,
-                    )
-                if idx + 1 < len(final_cues) and next_segs and next_segs != [next_text]:
-                    neighbor_results[idx + 1] = enforce_max_chars(
-                        [clean_punctuation(s, punctuation) for s in next_segs],
-                        max_chars,
-                    )
+            if llm_disabled:
+                segs = greedy_split(before, max_chars)
             else:
-                segs = normalize_segments_payload(raw, before)
+                try:
+                    raw = chat_completion(
+                        build_messages(prev_text, before, next_text, max_chars, allow_neighbor_rewrite),
+                        model=model,
+                        base_url=base_url,
+                        api_key=api_key or "",
+                        timeout=llm_timeout,
+                    )
+                    consecutive_llm_failures = 0
+
+                    if allow_neighbor_rewrite:
+                        prev_segs, segs, next_segs = normalize_window_payload(raw, prev_text, before, next_text)
+                        if idx > 0 and prev_segs and prev_segs != [prev_text]:
+                            neighbor_results[idx - 1] = enforce_max_chars(
+                                [clean_punctuation(s, punctuation) for s in prev_segs],
+                                max_chars,
+                            )
+                        if idx + 1 < len(final_cues) and next_segs and next_segs != [next_text]:
+                            neighbor_results[idx + 1] = enforce_max_chars(
+                                [clean_punctuation(s, punctuation) for s in next_segs],
+                                max_chars,
+                            )
+                    else:
+                        segs = normalize_segments_payload(raw, before)
+                except Exception as exc:
+                    if not fallback_on_llm_error:
+                        raise
+                    consecutive_llm_failures += 1
+                    segs = greedy_split(before, max_chars)
+                    error = {
+                        "cue": cue.index,
+                        "timing": cue.timing,
+                        "error": str(exc),
+                        "fallback": "local_split",
+                    }
+                    llm_errors.append(error)
+                    if progress_callback:
+                        progress_callback({
+                            "status": "fallback",
+                            "message": "LLM subtitle split failed; using local fallback",
+                            "current": position,
+                            "total": len(overlong_indices),
+                            "cue": cue.index,
+                            "error": str(exc),
+                        })
+                    if consecutive_llm_failures >= max_consecutive_llm_failures:
+                        llm_disabled = True
+                        if progress_callback:
+                            progress_callback({
+                                "status": "fallback",
+                                "message": "LLM subtitle split disabled after consecutive failures",
+                                "consecutive_failures": consecutive_llm_failures,
+                                "remaining": len(overlong_indices) - position,
+                            })
 
             segs = enforce_max_chars([clean_punctuation(s, punctuation) for s in segs], max_chars)
             split_results[idx] = segs
@@ -415,7 +488,10 @@ def optimize_srt(
         "output_srt": str(output),
         "max_chars": max_chars,
         "removed_punctuation": punctuation,
+        "use_llm": use_llm,
+        "llm_timeout": llm_timeout,
         "allow_neighbor_rewrite": allow_neighbor_rewrite,
+        "llm_fallback_error_count": len(llm_errors),
         "cue_count_before": len(cues),
         "cue_count_after": len(expanded),
         "punctuation_changed_cue_count": len(punctuation_changes),
@@ -423,6 +499,7 @@ def optimize_srt(
         "overlong_changed_cue_count": len(overlong_changes),
         "punctuation_changes": punctuation_changes,
         "overlong_changes": overlong_changes,
+        "llm_errors": llm_errors,
     }
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -444,6 +521,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-url", default=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"))
     parser.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY"))
     parser.add_argument("--no-llm", action="store_true")
+    parser.add_argument("--llm-timeout", type=int, default=30)
     parser.add_argument(
         "--allow-neighbor-rewrite",
         action="store_true",
@@ -465,6 +543,7 @@ def main() -> int:
         api_key=args.api_key,
         use_llm=not args.no_llm,
         allow_neighbor_rewrite=args.allow_neighbor_rewrite,
+        llm_timeout=args.llm_timeout,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0

@@ -266,6 +266,7 @@ def _run_pipeline_thread(video_path: Path, srt_path: Optional[Path], engine: str
         args.subtitle_max_chars = 20
         args.remove_punctuation = "，,"
         args.no_subtitle_llm = False
+        args.subtitle_llm_timeout = 30
         args.allow_neighbor_rewrite = False
         args.prepare_only = False
         args.render_current = False

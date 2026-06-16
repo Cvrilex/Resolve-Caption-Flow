@@ -331,6 +331,13 @@ def optimize_subtitles(srt: Path, base: str, args: argparse.Namespace, logger: L
         base_url=args.llm_base_url,
         use_llm=not args.no_subtitle_llm,
     )
+
+    def log_progress(payload: dict[str, Any]) -> None:
+        data = dict(payload)
+        status = str(data.pop("status", "progress"))
+        message = str(data.pop("message", "subtitle optimization progress"))
+        logger.event("subtitle_optimize", status, message, **data)
+
     result = optimize_srt(
         srt=srt,
         output=output,
@@ -342,6 +349,8 @@ def optimize_subtitles(srt: Path, base: str, args: argparse.Namespace, logger: L
         api_key=api_key,
         use_llm=not args.no_subtitle_llm,
         allow_neighbor_rewrite=args.allow_neighbor_rewrite,
+        llm_timeout=args.subtitle_llm_timeout,
+        progress_callback=log_progress,
     )
     logger.event(
         "subtitle_optimize",
@@ -1313,6 +1322,12 @@ def parse_args() -> argparse.Namespace:
         "--no-subtitle-llm",
         action="store_true",
         help="Use local greedy cue splitting instead of LLM for overlong subtitles.",
+    )
+    parser.add_argument(
+        "--subtitle-llm-timeout",
+        type=int,
+        default=30,
+        help="Per-cue LLM timeout in seconds for subtitle splitting before local fallback.",
     )
     parser.add_argument(
         "--allow-neighbor-rewrite",
