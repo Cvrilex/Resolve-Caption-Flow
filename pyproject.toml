@@ -1,0 +1,21 @@
+[project]
+name = "drautocut"
+version = "0.1.0"
+description = "Local medical captioning automation for DaVinci Resolve"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi",
+  "python-multipart",
+  "pypdf",
+  "uvicorn",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
