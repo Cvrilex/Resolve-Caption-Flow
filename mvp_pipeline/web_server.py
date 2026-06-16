@@ -225,6 +225,99 @@ def _write_approved_terms(source: Path, rows: list[dict[str, Any]], run_id: str)
     return output, len(replacements)
 
 
+def _read_log_events(log_path: Path) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    try:
+        for line in log_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event, dict):
+                events.append(event)
+    except OSError:
+        pass
+    return events
+
+
+def _candidate_from_log(log_path: Path) -> dict[str, Any] | None:
+    events = _read_log_events(log_path)
+    if not events:
+        return None
+    video_path = ""
+    pdf_path = ""
+    srt_path = ""
+    cue_count: int | None = None
+    status = "unknown"
+    message = ""
+    run_id = ""
+
+    match = re.search(r"-(\d{8}-\d{6})\.jsonl$", log_path.name)
+    if match:
+        run_id = match.group(1)
+
+    for event in events:
+        step = str(event.get("step") or "")
+        event_status = str(event.get("status") or "")
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        if step == "pipeline" and event_status == "start":
+            video_path = str(data.get("video") or video_path)
+        if step == "term_map":
+            pdf_path = str(data.get("context") or pdf_path)
+        if step in {"asr", "srt"}:
+            srt_path = str(data.get("srt") or srt_path)
+            if data.get("cue_count") is not None:
+                try:
+                    cue_count = int(data.get("cue_count"))
+                except (TypeError, ValueError):
+                    pass
+        if event_status in {"failed", "complete", "review"}:
+            status = event_status
+            message = str(event.get("message") or message)
+
+    if status == "complete" or not srt_path:
+        return None
+    video = Path(video_path) if video_path else None
+    srt = Path(srt_path)
+    pdf = Path(pdf_path) if pdf_path else None
+    if not srt.exists() or not video or not video.exists():
+        return None
+    return {
+        "run_id": run_id,
+        "status": status,
+        "message": message,
+        "video": str(video),
+        "video_name": video.name,
+        "pdf": str(pdf) if pdf and pdf.exists() else None,
+        "pdf_name": pdf.name if pdf and pdf.exists() else None,
+        "srt": str(srt),
+        "srt_name": srt.name,
+        "cue_count": cue_count,
+        "log": str(log_path),
+        "updated_at": datetime.fromtimestamp(log_path.stat().st_mtime).isoformat(timespec="seconds"),
+    }
+
+
+def _list_resume_candidates(limit: int = 8) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for log_path in sorted(LOG_DIR.glob("*.jsonl"), key=lambda path: path.stat().st_mtime, reverse=True):
+        candidate = _candidate_from_log(log_path)
+        if candidate:
+            candidates.append(candidate)
+        if len(candidates) >= limit:
+            break
+    return candidates
+
+
+def _find_resume_candidate(source_run_id: str) -> dict[str, Any] | None:
+    for candidate in _list_resume_candidates(limit=50):
+        if candidate.get("run_id") == source_run_id:
+            return candidate
+    return None
+
+
 def _run_pipeline_thread(video_path: Path, srt_path: Optional[Path], engine: str,
                           log_path: Path, output_name: str, run_id: str,
                           api_key: str = "", system_prompt: str = "",
@@ -439,6 +532,91 @@ async def upload(video: UploadFile = File(...), pdf: Optional[UploadFile] = File
     thread.start()
 
     return {"run_id": run_id, "log_path": str(log_path), "status": "running"}
+
+
+@app.get("/api/resumable-runs")
+async def resumable_runs():
+    """List previous jobs that have an SRT and can continue without re-running ASR."""
+    return {"runs": _list_resume_candidates()}
+
+
+@app.post("/api/resume/{source_run_id}")
+async def resume_from_srt(source_run_id: str, payload: dict[str, Any] = Body(...)):
+    """Resume from a previous job's generated SRT, skipping ASR."""
+    global _current_job, _active_thread
+    candidate = _find_resume_candidate(source_run_id)
+    if not candidate:
+        return {"error": "没有找到可恢复的 SRT 结果"}
+
+    effective_model = str(payload.get("model") or os.environ.get("OPENAI_MODEL", DEFAULT_LLM_MODEL)).strip()
+    effective_base_url = _normalize_base_url(str(payload.get("base_url") or os.environ.get("OPENAI_BASE_URL", DEFAULT_LLM_BASE_URL)))
+    effective_api_key = str(payload.get("api_key") or os.environ.get("OPENAI_API_KEY") or "").strip()
+    system_prompt = str(payload.get("system_prompt") or "")
+    if not (effective_api_key or _is_local_base_url(effective_base_url)):
+        return {"error": "请填写 API Key，或先在环境变量里设置 OPENAI_API_KEY"}
+
+    with _job_lock:
+        if _current_job.get("status") == "running":
+            return {"error": "已有任务正在运行，请等待当前任务结束"}
+        if _current_job.get("status") == "awaiting_terms":
+            return {"error": "当前任务正在等待术语审核，请先确认或刷新服务后再恢复任务"}
+
+    llm_error = _validate_llm(effective_model, effective_base_url, effective_api_key)
+    if llm_error:
+        return {"error": llm_error}
+
+    video_path = Path(str(candidate["video"]))
+    srt_path = Path(str(candidate["srt"]))
+    pdf_value = candidate.get("pdf")
+    pdf_path = Path(str(pdf_value)) if pdf_value else None
+    if not video_path.exists():
+        return {"error": "原视频不存在，无法恢复"}
+    if not srt_path.exists():
+        return {"error": "原 SRT 不存在，无法恢复"}
+
+    run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+    stem = video_path.stem.replace(" ", "_")
+    log_path = LOG_DIR / f"{stem}-{run_id}.jsonl"
+
+    with _job_lock:
+        _current_job = {
+            "status": "running",
+            "log_path": str(log_path),
+            "output_path": None,
+            "run_id": run_id,
+            "source_run_id": source_run_id,
+            "video": str(video_path),
+            "srt_path": str(srt_path),
+            "template_project": str(DEFAULT_TEMPLATE_PROJECT) if DEFAULT_TEMPLATE_PROJECT.exists() else None,
+            "resume": True,
+        }
+
+    thread = threading.Thread(
+        target=_run_pipeline_thread,
+        args=(
+            video_path,
+            srt_path,
+            "bcut",
+            log_path,
+            f"{stem}_web_{run_id}",
+            run_id,
+            effective_api_key,
+            system_prompt,
+            pdf_path if pdf_path and pdf_path.exists() else None,
+            None,
+            effective_model,
+            effective_base_url,
+            bool(pdf_path and pdf_path.exists()),
+            False,
+            1,
+            10.0,
+            12.0,
+        ),
+        daemon=True,
+    )
+    _active_thread = thread
+    thread.start()
+    return {"run_id": run_id, "source_run_id": source_run_id, "log_path": str(log_path), "status": "running"}
 
 
 @app.get("/api/terms/{run_id}")
