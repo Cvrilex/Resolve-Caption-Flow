@@ -15,6 +15,14 @@
 - Each segment can be sent to online ASR or local ASR independently.
 - After ASR, segment-level SRT cues are offset back to full-video time and merged.
 - `drautocut.integrations.ffmpeg` provides duration probing, silence detection, and audio segment extraction.
+- `drautocut.pipeline.asr` emits segment-level progress events for the Web panel: `running`, `segment_running`, `segment_progress`, `segment_done`, `segment_failed`, `failed`, and `done`.
+
+## Concurrency Policy
+
+- Default `max_workers` should stay at `1` for online ASR until provider behavior is known.
+- Allow a user-configurable value such as `2` for online ASR experiments, with clear failure reporting per segment.
+- Local ASR can use higher concurrency only after checking CPU/GPU memory pressure.
+- Failed segments should be retryable independently; a full-video rerun should not be required.
 
 ## LLM Correction
 
