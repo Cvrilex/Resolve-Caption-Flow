@@ -400,6 +400,10 @@ def generate_terms_from_context(context: Path, srt: Path, base: str, args: argpa
         "--api-key",
         api_key,
         "--progress-jsonl",
+        "--timeout",
+        str(getattr(args, "term_map_timeout", 45)),
+        "--retries",
+        str(getattr(args, "term_map_retries", 1)),
     ]
     if getattr(args, "llm_system_prompt", ""):
         cmd.extend(["--system-prompt", args.llm_system_prompt])

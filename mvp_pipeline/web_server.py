@@ -261,6 +261,8 @@ def _run_pipeline_thread(video_path: Path, srt_path: Optional[Path], engine: str
         if not args.llm_api_key and _is_local_base_url(args.llm_base_url):
             args.llm_api_key = "local"
         args.llm_system_prompt = system_prompt
+        args.term_map_timeout = 45
+        args.term_map_retries = 1
         args.review_terms = review_terms
         args.optimize_subtitles = True
         args.subtitle_max_chars = 20

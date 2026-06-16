@@ -101,7 +101,13 @@ def compaction_limits(base_url: str) -> tuple[int, int]:
     )
 
 
-def chat_completion(messages: list[dict[str, str]], model: str, base_url: str, api_key: str) -> str:
+def chat_completion(
+    messages: list[dict[str, str]],
+    model: str,
+    base_url: str,
+    api_key: str,
+    timeout: int = 45,
+) -> str:
     url = base_url.rstrip("/") + "/chat/completions"
     payload: dict[str, Any] = {
         "model": model,
@@ -120,11 +126,13 @@ def chat_completion(messages: list[dict[str, str]], model: str, base_url: str, a
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=120) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise TermMapperError(f"LLM request failed: {exc.code} {detail[:1000]}") from exc
+    except (TimeoutError, urllib.error.URLError, OSError) as exc:
+        raise TermMapperError(f"LLM request failed: {exc}") from exc
     try:
         return data["choices"][0]["message"]["content"]
     except Exception as exc:
@@ -254,6 +262,8 @@ def generate_terms(
     base_url: str,
     api_key: str,
     system_prompt: str = "",
+    timeout: int = 45,
+    retries: int = 1,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     context_limit, srt_chunk_limit = compaction_limits(base_url)
@@ -279,32 +289,48 @@ def generate_terms(
                 "total": len(srt_chunks),
                 "percent": round(index * 100 / max(1, len(srt_chunks))),
             })
-        try:
-            raw = chat_completion(
-                build_messages(context_text, srt_text, system_prompt),
-                model=model, base_url=base_url, api_key=api_key,
-            )
-            chunk_payload = normalize_terms_payload(raw)
-            replacements = chunk_payload.get("replacements", [])
-            term_lists.append(replacements)
-            if progress_callback:
-                progress_callback({
-                    "status": "chunk_done",
-                    "message": "terminology map chunk complete",
-                    "current": index,
-                    "total": len(srt_chunks),
-                    "replacement_count": len(replacements),
-                })
-        except Exception as exc:
-            chunk_errors.append({"chunk": index, "error": str(exc)})
-            if progress_callback:
-                progress_callback({
-                    "status": "chunk_failed",
-                    "message": "terminology map chunk failed",
-                    "current": index,
-                    "total": len(srt_chunks),
-                    "error": str(exc),
-                })
+        chunk_error: Exception | None = None
+        for attempt in range(1, retries + 2):
+            try:
+                raw = chat_completion(
+                    build_messages(context_text, srt_text, system_prompt),
+                    model=model,
+                    base_url=base_url,
+                    api_key=api_key,
+                    timeout=timeout,
+                )
+                chunk_payload = normalize_terms_payload(raw)
+                replacements = chunk_payload.get("replacements", [])
+                term_lists.append(replacements)
+                if progress_callback:
+                    progress_callback({
+                        "status": "chunk_done",
+                        "message": "terminology map chunk complete",
+                        "current": index,
+                        "total": len(srt_chunks),
+                        "attempt": attempt,
+                        "replacement_count": len(replacements),
+                    })
+                chunk_error = None
+                break
+            except Exception as exc:
+                chunk_error = exc
+                if progress_callback:
+                    progress_callback({
+                        "status": "chunk_retry" if attempt <= retries else "chunk_failed",
+                        "message": (
+                            "terminology map chunk failed; retrying"
+                            if attempt <= retries
+                            else "terminology map chunk failed; skipping"
+                        ),
+                        "current": index,
+                        "total": len(srt_chunks),
+                        "attempt": attempt,
+                        "max_attempts": retries + 1,
+                        "error": str(exc),
+                    })
+        if chunk_error is not None:
+            chunk_errors.append({"chunk": index, "error": str(chunk_error)})
 
     if chunk_errors and len(chunk_errors) == len(srt_chunks):
         raise TermMapperError(f"All terminology map chunks failed: {chunk_errors[-1]['error']}")
@@ -335,6 +361,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--system-prompt", default="", help="Custom system prompt for the LLM.")
     parser.add_argument("--print-prompt", action="store_true", help="Print the LLM messages without making a request.")
     parser.add_argument("--progress-jsonl", action="store_true", help="Write progress events as JSON lines to stderr.")
+    parser.add_argument("--timeout", type=int, default=int(os.environ.get("TERM_MAPPER_TIMEOUT", "45")))
+    parser.add_argument("--retries", type=int, default=int(os.environ.get("TERM_MAPPER_RETRIES", "1")))
     return parser.parse_args()
 
 
@@ -360,6 +388,8 @@ def main() -> int:
         base_url=args.base_url,
         api_key=args.api_key,
         system_prompt=args.system_prompt,
+        timeout=args.timeout,
+        retries=max(0, args.retries),
         progress_callback=progress_callback,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
