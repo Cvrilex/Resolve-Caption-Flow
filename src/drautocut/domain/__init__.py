@@ -2,7 +2,14 @@
 
 from .srt import Cue, SrtError, parse_srt, parse_srt_text, render_srt, write_srt
 from .subtitles import clean_and_split_cues, clean_punctuation, visible_len
-from .terms import Replacement, TermError, apply_replacements, load_replacements, preview_replacements
+from .terms import (
+    Replacement,
+    TermError,
+    apply_replacements,
+    load_replacements,
+    preview_replacements,
+    replacements_from_payload,
+)
 
 __all__ = [
     "Cue",
@@ -16,6 +23,7 @@ __all__ = [
     "parse_srt",
     "parse_srt_text",
     "preview_replacements",
+    "replacements_from_payload",
     "render_srt",
     "visible_len",
     "write_srt",
