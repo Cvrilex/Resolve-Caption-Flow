@@ -44,6 +44,7 @@ def run_online_long_video_asr(
     min_segment_ms: int = DEFAULT_MIN_SEGMENT_MS,
     silence_window_ms: int = DEFAULT_SILENCE_WINDOW_MS,
     fail_fast: bool = True,
+    jianying_sign_service_url: str = "",
     progress: ProgressCallback | None = None,
 ) -> LongAsrResult:
     def emit(status: str, message: str, **extra: Any) -> None:
@@ -52,6 +53,20 @@ def run_online_long_video_asr(
         event = {"step": "asr_prepare", "status": status, "message": message}
         event.update(extra)
         progress(event)
+
+    transcriber = OnlineAsrTranscriber(
+        engine,
+        tool_dir=tool_dir,
+        jianying_sign_service_url=jianying_sign_service_url,
+    )
+    if engine == "jianying":
+        emit(
+            "running",
+            "checking Jianying sign service",
+            sign_service_url=jianying_sign_service_url or "default",
+        )
+        transcriber.preflight()
+        emit("done", "Jianying sign service is reachable")
 
     emit("running", "probing media duration", video=str(video_path))
     media = probe_media(video_path)
@@ -81,7 +96,6 @@ def run_online_long_video_asr(
     audio_paths = extract_audio_segments(video_path, audio_dir, segments)
     emit("done", "audio segments extracted", audio_count=len(audio_paths))
 
-    transcriber = OnlineAsrTranscriber(engine, tool_dir=tool_dir)
     cues, _segment_results = run_segmented_asr(
         build_segment_tasks(segments, audio_paths),
         transcriber,

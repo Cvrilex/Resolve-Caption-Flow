@@ -13,10 +13,11 @@ class OnlineAsrError(RuntimeError):
 
 
 class OnlineAsrTranscriber:
-    def __init__(self, engine: str, *, tool_dir: Path):
+    def __init__(self, engine: str, *, tool_dir: Path, jianying_sign_service_url: str = ""):
         self.engine = engine
         self.name = f"online:{engine}"
         self.tool_dir = tool_dir
+        self.jianying_sign_service_url = jianying_sign_service_url
 
     def transcribe(
         self,
@@ -24,7 +25,7 @@ class OnlineAsrTranscriber:
         *,
         progress: Callable[[int, str], None] | None = None,
     ) -> list[Cue]:
-        module = load_online_asr_module(self.tool_dir)
+        module = self._load_module()
         if self.engine == "bcut":
             result = module.BcutASR(str(audio_path)).run(callback=progress)
         elif self.engine == "jianying":
@@ -35,6 +36,21 @@ class OnlineAsrTranscriber:
         if not result.has_data():
             raise OnlineAsrError("Online ASR returned no subtitle segments")
         return parse_srt_text(result.to_srt())
+
+    def preflight(self) -> None:
+        if self.engine != "jianying":
+            return
+        module = self._load_module()
+        try:
+            module.JianYingASR(b"")._get_sign("/lv/v1/upload_sign")
+        except Exception as exc:
+            raise OnlineAsrError(f"Jianying sign service unavailable: {exc}") from exc
+
+    def _load_module(self) -> ModuleType:
+        module = load_online_asr_module(self.tool_dir)
+        if self.engine == "jianying" and self.jianying_sign_service_url:
+            module.JianYingASR.SIGN_SERVICE_URL = self.jianying_sign_service_url
+        return module
 
 
 def load_online_asr_module(tool_dir: Path) -> ModuleType:

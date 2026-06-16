@@ -28,9 +28,13 @@ def test_run_online_long_video_asr_orchestrates_prepare_segment_asr_and_write(
     class FakeTranscriber:
         name = "fake"
 
-        def __init__(self, engine, *, tool_dir):
+        def __init__(self, engine, *, tool_dir, jianying_sign_service_url=""):
             self.engine = engine
             self.tool_dir = tool_dir
+            self.jianying_sign_service_url = jianying_sign_service_url
+
+        def preflight(self):
+            pass
 
         def transcribe(self, audio_path, *, progress=None):
             if progress:

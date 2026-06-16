@@ -211,6 +211,9 @@ def run_asr(audio_path: Path, srt_path: Path, engine: str, logger: Logger) -> Pa
     if engine == "bcut":
         result = online_asr.BcutASR(str(audio_path)).run(callback=progress)
     elif engine == "jianying":
+        sign_service_url = os.environ.get("JIANYING_SIGN_SERVICE_URL", "").strip()
+        if sign_service_url:
+            online_asr.JianYingASR.SIGN_SERVICE_URL = sign_service_url
         result = online_asr.JianYingASR(str(audio_path)).run(callback=progress)
     else:
         raise PipelineError(f"Unknown ASR engine: {engine}")
@@ -250,6 +253,9 @@ def run_segmented_online_asr(video: Path, srt_path: Path, engine: str, args: arg
         target_segment_minutes=target_minutes,
         max_segment_minutes=max_minutes,
     )
+    sign_service_url = (
+        getattr(args, "jianying_sign_service_url", "") or os.environ.get("JIANYING_SIGN_SERVICE_URL", "")
+    ).strip()
     try:
         result = run_online_long_video_asr(
             video_path=video,
@@ -260,6 +266,7 @@ def run_segmented_online_asr(video: Path, srt_path: Path, engine: str, args: arg
             max_workers=max_workers,
             target_segment_ms=int(target_minutes * 60 * 1000),
             max_segment_ms=int(max_minutes * 60 * 1000),
+            jianying_sign_service_url=sign_service_url,
             progress=progress,
         )
     except Exception as exc:
@@ -1281,6 +1288,11 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=12.0,
         help="Hard maximum segment length for --segmented-asr.",
+    )
+    parser.add_argument(
+        "--jianying-sign-service-url",
+        default=os.environ.get("JIANYING_SIGN_SERVICE_URL", ""),
+        help="Custom Jianying sign service URL. Defaults to JIANYING_SIGN_SERVICE_URL or the bundled tool default.",
     )
     parser.add_argument("--terms", help="JSON terminology replacement map to apply before Resolve import.")
     parser.add_argument(

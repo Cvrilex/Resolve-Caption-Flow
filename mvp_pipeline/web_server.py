@@ -253,6 +253,7 @@ def _run_pipeline_thread(video_path: Path, srt_path: Optional[Path], engine: str
         args.asr_max_workers = max(1, int(asr_max_workers or 1))
         args.asr_segment_minutes = max(1.0, float(asr_segment_minutes or 10.0))
         args.asr_max_segment_minutes = max(args.asr_segment_minutes, float(asr_max_segment_minutes or 12.0))
+        args.jianying_sign_service_url = os.environ.get("JIANYING_SIGN_SERVICE_URL", "").strip()
         args.terms = str(terms_path) if terms_path else None
         args.context = str(pdf_path) if pdf_path and not terms_path else None
         args.llm_model = model or os.environ.get("OPENAI_MODEL", DEFAULT_LLM_MODEL)
