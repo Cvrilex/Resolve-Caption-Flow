@@ -1,0 +1,48 @@
+# macOS / editor noise
+.DS_Store
+*.swp
+*.swo
+
+# Local machine config and secrets
+.env
+.env.*
+.mcp.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtual environments
+venv/
+.venv/
+mvp_pipeline/venv/
+davinci-resolve-mcp/
+
+# Pipeline runtime artifacts
+mvp_pipeline/input/*
+!mvp_pipeline/input/.gitkeep
+mvp_pipeline/input/uploads/
+mvp_pipeline/work/*
+!mvp_pipeline/work/.gitkeep
+mvp_pipeline/output/*
+!mvp_pipeline/output/.gitkeep
+mvp_pipeline/logs/*
+!mvp_pipeline/logs/.gitkeep
+
+# Media and generated subtitle artifacts
+*.mp4
+*.mov
+*.m4v
+*.mp3
+*.wav
+*.aac
+*.srt
+*.jsonl
+
+# Keep source/config JSON files explicit rather than generated reports
+!mvp_pipeline/terms.sample.json
+!mvp_pipeline/subtitle_style_sub01.json

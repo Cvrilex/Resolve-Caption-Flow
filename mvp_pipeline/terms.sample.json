@@ -1,0 +1,24 @@
+{
+  "replacements": [
+    {
+      "wrong": "普爱医科",
+      "correct": "普外科",
+      "note": "ASR misread specialty name"
+    },
+    {
+      "wrong": "朱成芳",
+      "correct": "朱晨芳",
+      "note": "Speaker name from course title card"
+    },
+    {
+      "wrong": "T 、 E 、 D",
+      "correct": "TED",
+      "note": "Normalize disease acronym"
+    },
+    {
+      "wrong": "T、E、D",
+      "correct": "TED",
+      "note": "Normalize disease acronym"
+    }
+  ]
+}

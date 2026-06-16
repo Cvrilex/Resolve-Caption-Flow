@@ -1,0 +1,33 @@
+{
+  "name": "sub01",
+  "scope": "subtitle_track",
+  "character": {
+    "font": "MiSans",
+    "font_face": "Semibold",
+    "color_rgb": [255, 12, 0],
+    "size": 58,
+    "line_spacing": 0,
+    "kerning": 0,
+    "font_case": "Mixed",
+    "alignment": "center"
+  },
+  "stroke": {
+    "color_rgb": [255, 255, 255],
+    "size": 6,
+    "outside_only": true
+  },
+  "transform": {
+    "position_x": 1214.0,
+    "position_y": 216.0,
+    "zoom_x": 1.0,
+    "zoom_y": 1.0,
+    "opacity": 100.0
+  },
+  "drop_shadow": {
+    "enabled": true,
+    "color_rgb": [0, 0, 0],
+    "offset_x": 3.0,
+    "offset_y": -3.0,
+    "blur": 20
+  }
+}

@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>医疗字幕自动化</title>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --surface: #16213e;
+    --border: #0f3460;
+    --accent: #e94560;
+    --text: #eaeaea;
+    --text-dim: #8888aa;
+    --green: #4ade80;
+    --yellow: #facc15;
+    --red: #f87171;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg); color: var(--text); min-height: 100vh;
+  }
+  .container { max-width: 700px; margin: 0 auto; padding: 40px 20px; }
+
+  header { text-align: center; margin-bottom: 32px; }
+  header h1 { font-size: 24px; font-weight: 600; }
+  header p { color: var(--text-dim); margin-top: 6px; font-size: 14px; }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 24px; margin-bottom: 16px;
+  }
+  .card h2 { font-size: 15px; font-weight: 600; margin-bottom: 16px; }
+
+  .drop-zone {
+    border: 2px dashed var(--border); border-radius: var(--radius);
+    padding: 32px; text-align: center; cursor: pointer;
+    transition: border-color .2s, background .2s;
+    margin-bottom: 12px;
+  }
+  .drop-zone:hover, .drop-zone.dragover {
+    border-color: var(--accent); background: rgba(233,69,96,.05);
+  }
+  .drop-zone .icon { font-size: 32px; margin-bottom: 8px; }
+  .drop-zone .label { font-size: 14px; color: var(--text-dim); }
+  .drop-zone .file-name { font-size: 13px; color: var(--green); margin-top: 6px; }
+  .drop-zone input { display: none; }
+
+  .engine-select { display: flex; gap: 12px; margin-bottom: 16px; }
+  .engine-option {
+    flex: 1; padding: 12px; border: 1px solid var(--border);
+    border-radius: var(--radius); text-align: center; cursor: pointer;
+    transition: border-color .2s, background .2s;
+  }
+  .engine-option:hover { border-color: var(--accent); }
+  .engine-option.selected { border-color: var(--accent); background: rgba(233,69,96,.08); }
+  .engine-option .name { font-weight: 600; font-size: 14px; }
+  .engine-option .desc { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+
+  .btn {
+    width: 100%; padding: 14px; border: none; border-radius: var(--radius);
+    font-size: 15px; font-weight: 600; cursor: pointer;
+    transition: opacity .2s, background .2s;
+  }
+  .btn:disabled { opacity: .4; cursor: not-allowed; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover:not(:disabled) { background: #d13350; }
+  .btn-download { background: var(--green); color: #000; margin-top: 12px; }
+  .btn-download:hover { background: #3cc06e; }
+
+  .progress { margin-top: 16px; }
+  .progress-bar {
+    height: 6px; background: var(--border); border-radius: 3px;
+    overflow: hidden; margin-bottom: 12px;
+  }
+  .progress-fill {
+    height: 100%; background: var(--accent); border-radius: 3px;
+    transition: width .3s; width: 0%;
+  }
+  .steps { list-style: none; }
+  .steps li {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 0; font-size: 13px; border-bottom: 1px solid var(--border);
+  }
+  .steps li:last-child { border-bottom: none; }
+  .steps .status-icon { width: 18px; text-align: center; flex-shrink: 0; }
+  .steps .status-icon.done { color: var(--green); }
+  .steps .status-icon.running { color: var(--yellow); }
+  .steps .status-icon.failed { color: var(--red); }
+  .steps .step-name { flex: 1; }
+  .steps .step-detail { color: var(--text-dim); font-size: 12px; }
+
+  .hidden { display: none; }
+  .error-msg { color: var(--red); font-size: 13px; margin-top: 8px; }
+  .terms-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .terms-table th, .terms-table td {
+    border-bottom: 1px solid var(--border); padding: 8px; vertical-align: top;
+  }
+  .terms-table th { color: var(--text-dim); font-weight: 500; text-align: left; }
+  .terms-table input[type="text"] {
+    width: 100%; min-width: 0; padding: 8px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    color: var(--text); font-size: 13px;
+  }
+  .terms-note { color: var(--text-dim); line-height: 1.45; word-break: break-word; }
+  .terms-actions { display: flex; gap: 12px; margin-top: 16px; }
+  .terms-actions .btn { flex: 1; }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>🔤 医疗字幕自动化</h1>
+    <p>视频 + 课程PDF → ASR识别 → 术语校正 → 达芬奇渲染</p>
+  </header>
+
+  <!-- Upload card -->
+  <div class="card" id="uploadCard">
+    <h2>上传文件</h2>
+
+    <div class="drop-zone" id="videoDrop">
+      <div class="icon">📹</div>
+      <div class="label">拖拽或点击上传视频</div>
+      <div class="file-name hidden" id="videoName"></div>
+      <input type="file" id="videoInput" accept="video/*">
+    </div>
+
+    <div class="drop-zone" id="pdfDrop">
+      <div class="icon">📄</div>
+      <div class="label">拖拽或点击上传课程PDF（可选）</div>
+      <div class="file-name hidden" id="pdfName"></div>
+      <input type="file" id="pdfInput" accept=".pdf">
+    </div>
+
+    <h2 style="margin-top:16px;">ASR引擎</h2>
+    <div class="engine-select">
+      <div class="engine-option selected" data-engine="bcut">
+        <div class="name">必剪</div>
+        <div class="desc">Bilibili · 零依赖</div>
+      </div>
+      <div class="engine-option" data-engine="jianying">
+        <div class="name">剪映</div>
+        <div class="desc">字节跳动 · 高准确率</div>
+      </div>
+    </div>
+
+    <h2 style="margin-top:16px;">LLM 设置</h2>
+    <div style="display:flex;gap:12px;margin-bottom:12px;">
+      <div style="flex:1;">
+        <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:4px;">模型</label>
+        <input type="text" id="modelInput" placeholder="deepseek-v4-pro"
+          style="width:100%;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:14px;">
+      </div>
+      <div style="flex:1;">
+        <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:4px;">API 地址</label>
+        <input type="text" id="baseUrlInput" placeholder="https://api.deepseek.com"
+          style="width:100%;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:14px;">
+      </div>
+    </div>
+    <div style="margin-bottom:12px;">
+      <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:4px;">API Key</label>
+      <input type="password" id="apiKeyInput" placeholder="sk-..."
+        style="width:100%;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:14px;">
+    </div>
+    <div style="margin-bottom:12px;">
+      <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:4px;">自定义系统提示词（可选）</label>
+      <textarea id="systemPromptInput" placeholder="为空则使用默认医疗字幕校对提示词..."
+        style="width:100%;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:13px;resize:vertical;min-height:60px;"
+        rows="2"></textarea>
+    </div>
+
+    <button class="btn btn-primary" id="startBtn" disabled>▶ 开始处理</button>
+    <div class="error-msg hidden" id="errorMsg"></div>
+  </div>
+
+  <!-- Progress card -->
+  <div class="card hidden" id="progressCard">
+    <h2 id="progressTitle">处理中...</h2>
+    <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+    <ul class="steps" id="stepsList"></ul>
+    <div class="error-msg hidden" id="progressErrorMsg"></div>
+    <button class="btn btn-download hidden" id="openFolderBtn">📂 打开视频所在文件夹</button>
+  </div>
+
+  <div class="card hidden" id="termReviewCard">
+    <h2>术语审核</h2>
+    <div id="termReviewMeta" class="terms-note" style="margin-bottom:12px;"></div>
+    <div style="overflow-x:auto;">
+      <table class="terms-table">
+        <thead>
+          <tr>
+            <th style="width:52px;">启用</th>
+            <th>错误词</th>
+            <th>正确术语</th>
+            <th>依据</th>
+          </tr>
+        </thead>
+        <tbody id="termsBody"></tbody>
+      </table>
+    </div>
+    <div class="terms-actions">
+      <button class="btn btn-download" id="confirmTermsBtn">确认并继续</button>
+    </div>
+    <div class="error-msg hidden" id="termReviewErrorMsg"></div>
+  </div>
+</div>
+
+<script>
+const STATE = { video: null, pdf: null, engine: 'bcut', runId: null, eventSource: null };
+const STEPS_ORDER = ['pipeline', 'probe_video', 'asr', 'term_map', 'term_correct',
+                     'term_review', 'subtitle_optimize', 'resolve_import_video', 'resolve_import_srt',
+                     'resolve_render'];
+const STEP_LABELS = {
+  pipeline: '流水线', probe_video: '视频探测', extract_audio: '提取音频',
+  asr: 'ASR语音识别', term_map: 'LLM术语映射', term_review: '术语审核',
+  term_correct: '术语校正',
+  subtitle_optimize: '字幕切分优化', resolve_import_video: '导入视频至达芬奇',
+  resolve_import_srt: '导入字幕至达芬奇', resolve_render: '达芬奇渲染导出',
+};
+
+// Drag & drop
+['videoDrop','pdfDrop'].forEach(id => {
+  const zone = document.getElementById(id);
+  const input = document.getElementById(id === 'videoDrop' ? 'videoInput' : 'pdfInput');
+  const nameEl = document.getElementById(id === 'videoDrop' ? 'videoName' : 'pdfName');
+  const key = id === 'videoDrop' ? 'video' : 'pdf';
+
+  zone.addEventListener('click', () => input.click());
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault(); zone.classList.remove('dragover');
+    const file = e.dataTransfer.files[0];
+    if (file) { setFile(key, file, nameEl); }
+  });
+  input.addEventListener('change', () => {
+    if (input.files[0]) { setFile(key, input.files[0], nameEl); }
+  });
+});
+
+function setFile(key, file, nameEl) {
+  STATE[key] = file;
+  nameEl.textContent = '✅ ' + file.name;
+  nameEl.classList.remove('hidden');
+  checkReady();
+}
+
+// Engine select
+document.querySelectorAll('.engine-option').forEach(opt => {
+  opt.addEventListener('click', () => {
+    document.querySelectorAll('.engine-option').forEach(o => o.classList.remove('selected'));
+    opt.classList.add('selected');
+    STATE.engine = opt.dataset.engine;
+  });
+});
+
+function checkReady() {
+  document.getElementById('startBtn').disabled = !STATE.video;
+}
+
+// Start pipeline
+document.getElementById('startBtn').addEventListener('click', async () => {
+  if (!STATE.video) return;
+
+  document.getElementById('uploadCard').classList.add('hidden');
+  document.getElementById('progressCard').classList.remove('hidden');
+  document.getElementById('progressTitle').textContent = '上传中...';
+  document.getElementById('errorMsg').classList.add('hidden');
+
+  const form = new FormData();
+  form.append('video', STATE.video);
+  if (STATE.pdf) form.append('pdf', STATE.pdf);
+  form.append('engine', STATE.engine);
+  const model = document.getElementById('modelInput').value.trim();
+  if (model) form.append('model', model);
+  const baseUrl = document.getElementById('baseUrlInput').value.trim();
+  if (baseUrl) form.append('base_url', baseUrl);
+  const apiKey = document.getElementById('apiKeyInput').value.trim();
+  if (apiKey) form.append('api_key', apiKey);
+  const systemPrompt = document.getElementById('systemPromptInput').value.trim();
+  if (systemPrompt) form.append('system_prompt', systemPrompt);
+
+  try {
+    const resp = await fetch('/api/upload', { method: 'POST', body: form });
+    const data = await resp.json();
+    if (data.error) { showUploadError(data.error); return; }
+    STATE.runId = data.run_id;
+    connectSSE(data.run_id);
+  } catch (e) {
+    showUploadError('上传失败: ' + e.message);
+  }
+});
+
+function connectSSE(runId) {
+  if (STATE.eventSource) STATE.eventSource.close();
+  const es = new EventSource('/api/progress/' + runId);
+  STATE.eventSource = es;
+  const seen = {};
+
+  es.onmessage = (e) => {
+    try {
+      const evt = JSON.parse(e.data);
+      if (evt.step === 'error') { showError(evt.message); return; }
+
+      const step = evt.step;
+      if (step === 'connected') return;
+
+      // Update progress title
+      if (STEP_LABELS[step]) {
+        document.getElementById('progressTitle').textContent = STEP_LABELS[step] + '...';
+      }
+
+      // Update or add step
+      if (!seen[step]) {
+        seen[step] = true;
+        addStep(step, evt.status, evt.message);
+      } else if (evt.status === 'done' || evt.status === 'failed' || evt.status === 'complete') {
+        updateStep(step, evt.status, evt.message);
+      }
+
+      // Progress bar
+      const doneCount = Object.values(seen).filter((_, i) => {
+        const s = Object.keys(seen)[i];
+        return document.getElementById('step-' + s)?.querySelector('.status-icon')?.classList.contains('done');
+      }).length;
+      const pct = Math.min(95, Math.round((doneCount / STEPS_ORDER.length) * 100));
+      document.getElementById('progressFill').style.width = pct + '%';
+
+      if (evt.status === 'review') {
+        document.getElementById('progressTitle').textContent = '等待术语审核';
+        loadTermReview(runId);
+        es.close();
+        return;
+      }
+
+      // Complete
+      if (evt.status === 'complete') {
+        document.getElementById('progressFill').style.width = '100%';
+        document.getElementById('progressTitle').textContent = '✅ 处理完成';
+        document.getElementById('openFolderBtn').classList.remove('hidden');
+        document.getElementById('openFolderBtn').onclick = () => {
+          fetch('/api/open-folder/' + runId);
+        };
+        es.close();
+      }
+
+      if (evt.status === 'failed') {
+        document.getElementById('progressTitle').textContent = '❌ 处理失败';
+        showError(evt.message);
+        es.close();
+      }
+    } catch (_) {}
+  };
+
+  es.onerror = () => {
+    // SSE will auto-reconnect; if persistent, show timeout
+  };
+}
+
+function addStep(step, status, msg) {
+  if (document.getElementById('step-' + step)) {
+    updateStep(step, status, msg);
+    return;
+  }
+  const list = document.getElementById('stepsList');
+  const li = document.createElement('li');
+  li.id = 'step-' + step;
+  const icon = status === 'done' ? '✅' : status === 'failed' ? '❌' : '🔄';
+  const cls = status === 'done' ? 'done' : status === 'failed' ? 'failed' : 'running';
+  li.innerHTML = `<span class="status-icon ${cls}">${icon}</span>
+                  <span class="step-name">${STEP_LABELS[step] || step}</span>
+                  <span class="step-detail">${msg || ''}</span>`;
+  list.appendChild(li);
+}
+
+function updateStep(step, status, msg) {
+  const li = document.getElementById('step-' + step);
+  if (!li) return;
+  const isDone = status === 'done' || status === 'complete';
+  const isFailed = status === 'failed';
+  const icon = isDone ? '✅' : isFailed ? '❌' : '🔄';
+  const cls = isDone ? 'done' : isFailed ? 'failed' : 'running';
+  li.querySelector('.status-icon').textContent = icon;
+  li.querySelector('.status-icon').className = 'status-icon ' + cls;
+  li.querySelector('.step-detail').textContent = msg || '';
+}
+
+function showError(msg) {
+  const el = document.getElementById('errorMsg');
+  el.textContent = '❌ ' + msg;
+  el.classList.remove('hidden');
+  const progressEl = document.getElementById('progressErrorMsg');
+  if (progressEl) {
+    progressEl.textContent = '❌ ' + msg;
+    progressEl.classList.remove('hidden');
+  }
+  document.getElementById('progressCard').classList.remove('hidden');
+  document.getElementById('progressTitle').textContent = '处理失败';
+}
+
+function showUploadError(msg) {
+  const uploadCard = document.getElementById('uploadCard');
+  const progressCard = document.getElementById('progressCard');
+  uploadCard.classList.remove('hidden');
+  progressCard.classList.add('hidden');
+  const el = document.getElementById('errorMsg');
+  el.textContent = '❌ ' + msg;
+  el.classList.remove('hidden');
+  checkReady();
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
+
+async function loadTermReview(runId) {
+  const card = document.getElementById('termReviewCard');
+  const body = document.getElementById('termsBody');
+  const meta = document.getElementById('termReviewMeta');
+  const error = document.getElementById('termReviewErrorMsg');
+  card.classList.remove('hidden');
+  error.classList.add('hidden');
+  body.innerHTML = '';
+  meta.textContent = '读取术语候选中...';
+
+  try {
+    const resp = await fetch('/api/terms/' + runId);
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+    STATE.terms = data.replacements || [];
+    meta.textContent = `共 ${STATE.terms.length} 条候选`;
+    if (!STATE.terms.length) {
+      body.innerHTML = '<tr><td colspan="4" class="terms-note">没有候选术语，可直接继续</td></tr>';
+      return;
+    }
+    body.innerHTML = STATE.terms.map((row, i) => `
+      <tr data-index="${i}">
+        <td><input type="checkbox" class="term-enabled" ${row.enabled ? 'checked' : ''}></td>
+        <td><input type="text" class="term-wrong" value="${escapeHtml(row.wrong)}"></td>
+        <td><input type="text" class="term-correct" value="${escapeHtml(row.correct)}"></td>
+        <td class="terms-note">${escapeHtml(row.evidence || row.note || row.confidence || '')}</td>
+      </tr>
+    `).join('');
+  } catch (e) {
+    meta.textContent = '';
+    error.textContent = '❌ ' + e.message;
+    error.classList.remove('hidden');
+  }
+}
+
+document.getElementById('confirmTermsBtn').addEventListener('click', async () => {
+  if (!STATE.runId) return;
+  const rows = [...document.querySelectorAll('#termsBody tr[data-index]')].map(tr => ({
+    enabled: tr.querySelector('.term-enabled').checked,
+    wrong: tr.querySelector('.term-wrong').value.trim(),
+    correct: tr.querySelector('.term-correct').value.trim(),
+  }));
+  const button = document.getElementById('confirmTermsBtn');
+  const error = document.getElementById('termReviewErrorMsg');
+  button.disabled = true;
+  error.classList.add('hidden');
+  try {
+    const resp = await fetch('/api/terms/' + STATE.runId + '/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ replacements: rows }),
+    });
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+    document.getElementById('termReviewCard').classList.add('hidden');
+    document.getElementById('progressCard').classList.remove('hidden');
+    document.getElementById('progressTitle').textContent = '术语已确认，继续处理...';
+    connectSSE(STATE.runId);
+  } catch (e) {
+    error.textContent = '❌ ' + e.message;
+    error.classList.remove('hidden');
+  } finally {
+    button.disabled = false;
+  }
+});
+
+checkReady();
+</script>
+</body>
+</html>
