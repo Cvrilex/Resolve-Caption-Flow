@@ -205,11 +205,11 @@ def merge_replacements(term_lists: list[list[dict[str, Any]]]) -> list[dict[str,
 def build_messages(context_text: str, srt_text: str, system_prompt: str = "") -> list[dict[str, str]]:
     system = system_prompt.strip() or (
         "你是医疗课程中文字幕校对助手。任务是基于课程资料和ASR字幕，"
-        "生成可审核的术语替换表。只输出JSON。不要改写整句，不要翻译，"
+        "生成精简、可审核的术语替换表。只输出JSON。不要改写整句，不要翻译，"
         "只提出高置信的错词->正确术语替换。遇到不确定的内容不要输出。"
     )
     user = f"""
-请从下面两部分内容中找出 ASR 字幕里的医学术语、人名、机构名、英文缩写错误，
+请从下面两部分内容中找出 ASR 字幕里的高价值识别错误，
 输出 JSON：
 
 {{
@@ -229,8 +229,13 @@ def build_messages(context_text: str, srt_text: str, system_prompt: str = "") ->
 - 不要输出低置信替换。
 - 不要输出会改变医学含义的猜测。
 - wrong 必须出现在 ASR 字幕中。
-- correct 应优先来自课程资料。
-- 保留英文缩写如 TED、MDT、TAO 的标准大写形式。
+- 术语表要尽量精简，不要把课程资料里的名词原样整理成词库。
+- 优先保留人名、地名、学校名、医院/机构名、会议/指南名、英文缩写、药物名、检查/术式名、罕见病名、冷门或容易被 ASR 误识别的专业名词。
+- 学科中常见且 ASR 不容易混淆的普通术语不要输出，例如常见疾病大类、常规检查、普通症状、通用动词和泛化概念。
+- 如果 ASR 已经识别正确，不要输出。
+- correct 可以来自课程资料，也可以基于相关医学领域专业知识进行高置信校正；但必须能用课程资料、字幕上下文或医学常识给出简短依据。
+- 对英文缩写、药物名、指南名、人名和机构名保持标准大小写和标准写法。
+- 每个字幕块只输出最值得审核的少量候选，宁缺毋滥。
 
 课程资料：
 {context_text}
