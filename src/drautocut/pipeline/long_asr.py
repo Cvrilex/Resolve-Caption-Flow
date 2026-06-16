@@ -43,6 +43,7 @@ def run_online_long_video_asr(
     max_segment_ms: int = DEFAULT_MAX_SEGMENT_MS,
     min_segment_ms: int = DEFAULT_MIN_SEGMENT_MS,
     silence_window_ms: int = DEFAULT_SILENCE_WINDOW_MS,
+    fail_fast: bool = True,
     progress: ProgressCallback | None = None,
 ) -> LongAsrResult:
     def emit(status: str, message: str, **extra: Any) -> None:
@@ -85,6 +86,7 @@ def run_online_long_video_asr(
         build_segment_tasks(segments, audio_paths),
         transcriber,
         max_workers=max_workers,
+        fail_fast=fail_fast,
         progress=progress,
     )
 
