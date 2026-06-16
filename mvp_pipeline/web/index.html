@@ -56,6 +56,8 @@
   }
   .engine-option:hover { border-color: var(--accent); }
   .engine-option.selected { border-color: var(--accent); background: rgba(233,69,96,.08); }
+  .engine-option.disabled { opacity: .45; cursor: not-allowed; }
+  .engine-option.disabled:hover { border-color: var(--border); background: transparent; }
   .engine-option .name { font-weight: 600; font-size: 14px; }
   .engine-option .desc { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
 
@@ -165,9 +167,9 @@
         <div class="name">必剪</div>
         <div class="desc">Bilibili · 零依赖</div>
       </div>
-      <div class="engine-option" data-engine="jianying">
-        <div class="name">剪映</div>
-        <div class="desc">字节跳动 · 高准确率</div>
+      <div class="engine-option disabled" data-engine="local">
+        <div class="name">本地 ASR</div>
+        <div class="desc">离线模型 · 即将接入</div>
       </div>
     </div>
 
@@ -293,6 +295,7 @@ function setFile(key, file, nameEl) {
 // Engine select
 document.querySelectorAll('.engine-option').forEach(opt => {
   opt.addEventListener('click', () => {
+    if (opt.classList.contains('disabled')) return;
     document.querySelectorAll('.engine-option').forEach(o => o.classList.remove('selected'));
     opt.classList.add('selected');
     STATE.engine = opt.dataset.engine;

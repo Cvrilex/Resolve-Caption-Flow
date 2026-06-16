@@ -1264,7 +1264,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the MVP video -> ASR -> Resolve render pipeline.")
     parser.add_argument("--video", default=str(ROOT / "input" / "3min.mp4"), help="Input video path.")
-    parser.add_argument("--engine", choices=["bcut", "jianying"], default="bcut", help="Online ASR engine.")
+    parser.add_argument("--engine", choices=["bcut"], default="bcut", help="Online ASR engine.")
     parser.add_argument("--srt", help="Skip ASR and use this existing SRT.")
     parser.add_argument(
         "--segmented-asr",
@@ -1288,11 +1288,6 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=12.0,
         help="Hard maximum segment length for --segmented-asr.",
-    )
-    parser.add_argument(
-        "--jianying-sign-service-url",
-        default=os.environ.get("JIANYING_SIGN_SERVICE_URL", ""),
-        help="Custom Jianying sign service URL. Defaults to JIANYING_SIGN_SERVICE_URL or the bundled tool default.",
     )
     parser.add_argument("--terms", help="JSON terminology replacement map to apply before Resolve import.")
     parser.add_argument(

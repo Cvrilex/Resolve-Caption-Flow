@@ -253,7 +253,6 @@ def _run_pipeline_thread(video_path: Path, srt_path: Optional[Path], engine: str
         args.asr_max_workers = max(1, int(asr_max_workers or 1))
         args.asr_segment_minutes = max(1.0, float(asr_segment_minutes or 10.0))
         args.asr_max_segment_minutes = max(args.asr_segment_minutes, float(asr_max_segment_minutes or 12.0))
-        args.jianying_sign_service_url = os.environ.get("JIANYING_SIGN_SERVICE_URL", "").strip()
         args.terms = str(terms_path) if terms_path else None
         args.context = str(pdf_path) if pdf_path and not terms_path else None
         args.llm_model = model or os.environ.get("OPENAI_MODEL", DEFAULT_LLM_MODEL)
@@ -352,7 +351,7 @@ async def upload(video: UploadFile = File(...), pdf: Optional[UploadFile] = File
 
     if video.filename is None:
         return {"error": "请选择视频文件"}
-    if engine not in {"bcut", "jianying"}:
+    if engine != "bcut":
         return {"error": "ASR 引擎参数不正确"}
     effective_model = (model or os.environ.get("OPENAI_MODEL", DEFAULT_LLM_MODEL)).strip()
     effective_base_url = _normalize_base_url(base_url or os.environ.get("OPENAI_BASE_URL", DEFAULT_LLM_BASE_URL))
