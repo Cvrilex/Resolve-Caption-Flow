@@ -284,7 +284,15 @@
 </div>
 
 <script>
-const STATE = { video: null, pdf: null, engine: 'bcut', runId: null, eventSource: null, resumableRuns: [] };
+const STATE = {
+  video: null,
+  pdf: null,
+  engine: 'bcut',
+  runId: null,
+  eventSource: null,
+  resumableRuns: [],
+  globalProgress: 0,
+};
 const STEPS_ORDER = ['pipeline', 'probe_video', 'extract_audio', 'asr_prepare', 'asr', 'term_map', 'term_correct',
                      'term_review', 'subtitle_optimize', 'resolve_import_video', 'resolve_import_srt',
                      'resolve_render'];
@@ -294,6 +302,23 @@ const STEP_LABELS = {
   term_correct: '术语校正',
   subtitle_optimize: '字幕切分优化', resolve_import_video: '导入视频至达芬奇',
   resolve_import_srt: '导入字幕至达芬奇', resolve_render: '达芬奇渲染导出',
+};
+const GLOBAL_PROGRESS_RANGES = {
+  pipeline: [0, 2],
+  probe_video: [2, 5],
+  extract_audio: [5, 10],
+  asr_prepare: [10, 14],
+  asr: [14, 45],
+  srt: [45, 47],
+  term_map: [47, 64],
+  term_review: [64, 64],
+  term_correct: [64, 69],
+  subtitle_optimize: [69, 78],
+  resolve_import_video: [78, 84],
+  resolve_import_srt: [84, 88],
+  resolve_subtitle_preset: [88, 89],
+  resolve_render: [89, 98],
+  probe_rendered: [98, 99],
 };
 
 // Drag & drop
@@ -408,22 +433,7 @@ function connectSSE(runId) {
         updateStep(step, evt.status, evt.message);
       }
 
-      // Progress bar
-      const doneCount = Object.values(seen).filter((_, i) => {
-        const s = Object.keys(seen)[i];
-        return document.getElementById('step-' + s)?.querySelector('.status-icon')?.classList.contains('done');
-      }).length;
-      const pct = Math.min(95, Math.round((doneCount / STEPS_ORDER.length) * 100));
-      document.getElementById('progressFill').style.width = pct + '%';
-      if (step === 'asr' && evt.data && typeof evt.data.percent === 'number') {
-        const asrPct = Math.min(65, 15 + Math.round(evt.data.percent * 0.45));
-        document.getElementById('progressFill').style.width = asrPct + '%';
-      }
-      if ((step === 'term_map' || step === 'subtitle_optimize') && evt.data && typeof evt.data.percent === 'number') {
-        const base = step === 'term_map' ? 62 : 74;
-        const span = step === 'term_map' ? 12 : 8;
-        document.getElementById('progressFill').style.width = Math.min(95, base + Math.round(evt.data.percent * span / 100)) + '%';
-      }
+      updateGlobalProgress(evt);
 
       if (evt.status === 'review') {
         document.getElementById('progressTitle').textContent = '等待术语审核';
@@ -434,7 +444,7 @@ function connectSSE(runId) {
 
       // Complete
       if (evt.status === 'complete') {
-        document.getElementById('progressFill').style.width = '100%';
+        setGlobalProgress(100, true);
         document.getElementById('progressTitle').textContent = '✅ 处理完成';
         document.getElementById('openFolderBtn').classList.remove('hidden');
         document.getElementById('openFolderBtn').onclick = () => {
@@ -464,7 +474,34 @@ function resetProgressUI() {
   document.getElementById('stageProgressPanel').classList.add('hidden');
   document.getElementById('progressErrorMsg').classList.add('hidden');
   document.getElementById('openFolderBtn').classList.add('hidden');
+  STATE.globalProgress = 0;
   document.getElementById('progressFill').style.width = '0%';
+}
+
+function setGlobalProgress(value, force = false) {
+  const next = Math.max(0, Math.min(100, Math.round(value)));
+  if (!force && next < STATE.globalProgress) return;
+  STATE.globalProgress = next;
+  document.getElementById('progressFill').style.width = next + '%';
+}
+
+function updateGlobalProgress(evt) {
+  if (evt.status === 'complete') {
+    setGlobalProgress(100, true);
+    return;
+  }
+  if (evt.status === 'failed') return;
+  const range = GLOBAL_PROGRESS_RANGES[evt.step];
+  if (!range) return;
+  const [start, end] = range;
+  let localPercent = stagePercentFromEvent(evt);
+  if (evt.status === 'done' || evt.status === 'skipped' || evt.status === 'review') {
+    localPercent = 100;
+  }
+  if (localPercent === null) {
+    localPercent = evt.status === 'running' || evt.status === 'queued' ? 5 : 0;
+  }
+  setGlobalProgress(start + ((end - start) * localPercent / 100));
 }
 
 function addStep(step, status, msg) {
