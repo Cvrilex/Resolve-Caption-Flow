@@ -7,11 +7,12 @@ import argparse
 import json
 import os
 import re
+import sys
 import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 from term_corrector import parse_srt
@@ -64,6 +65,25 @@ def compact_srt_text(srt: Path, max_chars: int = 14000) -> str:
     return text[:max_chars]
 
 
+def chunk_srt_text(srt: Path, max_chars: int = 8000) -> list[str]:
+    cues = parse_srt(srt)
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for cue in cues:
+        row = f"{cue.index} {cue.timing} {' '.join(cue.lines)}"
+        row_len = len(row) + 1
+        if current and current_len + row_len > max_chars:
+            chunks.append("\n".join(current))
+            current = []
+            current_len = 0
+        current.append(row)
+        current_len += row_len
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
 def compact_context(text: str, max_chars: int = 18000) -> str:
     normalized = re.sub(r"\n{3,}", "\n\n", text.strip())
     return normalized[:max_chars]
@@ -73,11 +93,11 @@ def compaction_limits(base_url: str) -> tuple[int, int]:
     if is_local_base_url(base_url):
         return (
             int(os.environ.get("TERM_MAPPER_LOCAL_CONTEXT_CHARS", "1800")),
-            int(os.environ.get("TERM_MAPPER_LOCAL_SRT_CHARS", "1400")),
+            int(os.environ.get("TERM_MAPPER_LOCAL_SRT_CHUNK_CHARS", "1400")),
         )
     return (
         int(os.environ.get("TERM_MAPPER_CONTEXT_CHARS", "18000")),
-        int(os.environ.get("TERM_MAPPER_SRT_CHARS", "14000")),
+        int(os.environ.get("TERM_MAPPER_SRT_CHUNK_CHARS", "8000")),
     )
 
 
@@ -165,6 +185,23 @@ def normalize_terms_payload(raw: str) -> dict[str, Any]:
     }
 
 
+def merge_replacements(term_lists: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for terms in term_lists:
+        for item in terms:
+            wrong = str(item.get("wrong", "")).strip()
+            correct = str(item.get("correct", "")).strip()
+            if not wrong or not correct or wrong == correct:
+                continue
+            key = (wrong, correct)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+    return merged
+
+
 def build_messages(context_text: str, srt_text: str, system_prompt: str = "") -> list[dict[str, str]]:
     system = system_prompt.strip() or (
         "你是医疗课程中文字幕校对助手。任务是基于课程资料和ASR字幕，"
@@ -204,16 +241,76 @@ ASR字幕：
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-def generate_terms(context: Path, srt: Path, output: Path, model: str, base_url: str, api_key: str,
-                   system_prompt: str = "") -> dict[str, Any]:
-    context_limit, srt_limit = compaction_limits(base_url)
+def generate_terms(
+    context: Path,
+    srt: Path,
+    output: Path,
+    model: str,
+    base_url: str,
+    api_key: str,
+    system_prompt: str = "",
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    context_limit, srt_chunk_limit = compaction_limits(base_url)
     context_text = compact_context(read_context(context), max_chars=context_limit)
-    srt_text = compact_srt_text(srt, max_chars=srt_limit)
-    raw = chat_completion(
-        build_messages(context_text, srt_text, system_prompt),
-        model=model, base_url=base_url, api_key=api_key,
-    )
-    payload = normalize_terms_payload(raw)
+    srt_chunks = chunk_srt_text(srt, max_chars=srt_chunk_limit)
+    if progress_callback:
+        progress_callback({
+            "status": "planned",
+            "message": "terminology mapping chunks planned",
+            "chunk_count": len(srt_chunks),
+            "context_chars": len(context_text),
+            "srt_chunk_chars": srt_chunk_limit,
+        })
+
+    term_lists: list[list[dict[str, Any]]] = []
+    chunk_errors: list[dict[str, Any]] = []
+    for index, srt_text in enumerate(srt_chunks, start=1):
+        if progress_callback:
+            progress_callback({
+                "status": "progress",
+                "message": "generating terminology map chunk",
+                "current": index,
+                "total": len(srt_chunks),
+                "percent": round(index * 100 / max(1, len(srt_chunks))),
+            })
+        try:
+            raw = chat_completion(
+                build_messages(context_text, srt_text, system_prompt),
+                model=model, base_url=base_url, api_key=api_key,
+            )
+            chunk_payload = normalize_terms_payload(raw)
+            replacements = chunk_payload.get("replacements", [])
+            term_lists.append(replacements)
+            if progress_callback:
+                progress_callback({
+                    "status": "chunk_done",
+                    "message": "terminology map chunk complete",
+                    "current": index,
+                    "total": len(srt_chunks),
+                    "replacement_count": len(replacements),
+                })
+        except Exception as exc:
+            chunk_errors.append({"chunk": index, "error": str(exc)})
+            if progress_callback:
+                progress_callback({
+                    "status": "chunk_failed",
+                    "message": "terminology map chunk failed",
+                    "current": index,
+                    "total": len(srt_chunks),
+                    "error": str(exc),
+                })
+
+    if chunk_errors and len(chunk_errors) == len(srt_chunks):
+        raise TermMapperError(f"All terminology map chunks failed: {chunk_errors[-1]['error']}")
+
+    payload = {
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "replacements": merge_replacements(term_lists),
+        "chunk_count": len(srt_chunks),
+        "chunk_error_count": len(chunk_errors),
+        "chunk_errors": chunk_errors,
+    }
     payload["source_context"] = str(context)
     payload["source_srt"] = str(srt)
     payload["model"] = model
@@ -232,6 +329,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY"))
     parser.add_argument("--system-prompt", default="", help="Custom system prompt for the LLM.")
     parser.add_argument("--print-prompt", action="store_true", help="Print the LLM messages without making a request.")
+    parser.add_argument("--progress-jsonl", action="store_true", help="Write progress events as JSON lines to stderr.")
     return parser.parse_args()
 
 
@@ -244,6 +342,11 @@ def main() -> int:
         return 0
     if not args.api_key:
         raise TermMapperError("Missing API key. Set OPENAI_API_KEY or pass --api-key.")
+    progress_callback = None
+    if args.progress_jsonl:
+        def emit_progress(payload: dict[str, Any]) -> None:
+            print(json.dumps(payload, ensure_ascii=False), file=sys.stderr, flush=True)
+        progress_callback = emit_progress
     result = generate_terms(
         context=Path(args.context).expanduser().resolve(),
         srt=Path(args.srt).expanduser().resolve(),
@@ -252,6 +355,7 @@ def main() -> int:
         base_url=args.base_url,
         api_key=args.api_key,
         system_prompt=args.system_prompt,
+        progress_callback=progress_callback,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0

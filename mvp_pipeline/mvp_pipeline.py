@@ -399,10 +399,11 @@ def generate_terms_from_context(context: Path, srt: Path, base: str, args: argpa
         args.llm_base_url,
         "--api-key",
         api_key,
+        "--progress-jsonl",
     ]
     if getattr(args, "llm_system_prompt", ""):
         cmd.extend(["--system-prompt", args.llm_system_prompt])
-    proc = subprocess.run(
+    proc = subprocess.Popen(
         cmd,
         text=True,
         encoding="utf-8",
@@ -411,11 +412,30 @@ def generate_terms_from_context(context: Path, srt: Path, base: str, args: argpa
         stderr=subprocess.PIPE,
         env=env,
     )
+    stderr_lines: list[str] = []
+    assert proc.stderr is not None
+    for line in proc.stderr:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        stderr_lines.append(stripped)
+        try:
+            progress = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(progress, dict):
+            status = str(progress.pop("status", "progress"))
+            message = str(progress.pop("message", "terminology map progress"))
+            logger.event("term_map", status, message, **progress)
+    stdout, stderr_remainder = proc.communicate()
+    if stderr_remainder:
+        stderr_lines.extend(line for line in stderr_remainder.splitlines() if line.strip())
     if proc.returncode != 0:
-        logger.event("term_map", "failed", proc.stderr.strip()[-2000:] or proc.stdout.strip()[-2000:])
+        stderr_text = "\n".join(stderr_lines)
+        logger.event("term_map", "failed", stderr_text.strip()[-2000:] or stdout.strip()[-2000:])
         raise PipelineError("Terminology map generation failed")
     try:
-        result = json.loads(proc.stdout)
+        result = json.loads(stdout)
     except json.JSONDecodeError:
         result = json.loads(output.read_text(encoding="utf-8"))
     logger.event(
