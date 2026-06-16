@@ -107,6 +107,31 @@
   .terms-note { color: var(--text-dim); line-height: 1.45; word-break: break-word; }
   .terms-actions { display: flex; gap: 12px; margin-top: 16px; }
   .terms-actions .btn { flex: 1; }
+  .asr-settings {
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 12px; margin-bottom: 16px; background: rgba(15,52,96,.18);
+  }
+  .asr-settings label { font-size: 13px; color: var(--text-dim); }
+  .asr-settings input[type="number"] {
+    width: 100%; padding: 8px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    color: var(--text); font-size: 13px;
+  }
+  .asr-settings-row { display: flex; gap: 12px; margin-top: 10px; }
+  .asr-segments {
+    margin-top: 12px; border: 1px solid var(--border);
+    border-radius: var(--radius); overflow: hidden;
+  }
+  .asr-segment-row {
+    display: grid; grid-template-columns: 72px 1fr 72px;
+    gap: 8px; align-items: center; padding: 8px 10px;
+    border-bottom: 1px solid var(--border); font-size: 12px;
+  }
+  .asr-segment-row:last-child { border-bottom: none; }
+  .asr-segment-time { color: var(--text-dim); }
+  .asr-segment-status.failed { color: var(--red); }
+  .asr-segment-status.done { color: var(--green); }
+  .asr-segment-status.running { color: var(--yellow); }
 </style>
 </head>
 <body>
@@ -146,6 +171,23 @@
       </div>
     </div>
 
+    <div class="asr-settings">
+      <label>
+        <input type="checkbox" id="segmentedAsrInput">
+        长视频分段 ASR
+      </label>
+      <div class="asr-settings-row">
+        <div style="flex:1;">
+          <label style="display:block;margin-bottom:4px;">并发数</label>
+          <input type="number" id="asrWorkersInput" min="1" max="3" value="1">
+        </div>
+        <div style="flex:1;">
+          <label style="display:block;margin-bottom:4px;">目标分钟/段</label>
+          <input type="number" id="asrSegmentMinutesInput" min="3" max="15" step="1" value="10">
+        </div>
+      </div>
+    </div>
+
     <h2 style="margin-top:16px;">LLM 设置</h2>
     <div style="display:flex;gap:12px;margin-bottom:12px;">
       <div style="flex:1;">
@@ -180,6 +222,7 @@
     <h2 id="progressTitle">处理中...</h2>
     <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
     <ul class="steps" id="stepsList"></ul>
+    <div class="asr-segments hidden" id="asrSegmentsPanel"></div>
     <div class="error-msg hidden" id="progressErrorMsg"></div>
     <button class="btn btn-download hidden" id="openFolderBtn">📂 打开视频所在文件夹</button>
   </div>
@@ -209,12 +252,12 @@
 
 <script>
 const STATE = { video: null, pdf: null, engine: 'bcut', runId: null, eventSource: null };
-const STEPS_ORDER = ['pipeline', 'probe_video', 'asr', 'term_map', 'term_correct',
+const STEPS_ORDER = ['pipeline', 'probe_video', 'extract_audio', 'asr_prepare', 'asr', 'term_map', 'term_correct',
                      'term_review', 'subtitle_optimize', 'resolve_import_video', 'resolve_import_srt',
                      'resolve_render'];
 const STEP_LABELS = {
   pipeline: '流水线', probe_video: '视频探测', extract_audio: '提取音频',
-  asr: 'ASR语音识别', term_map: 'LLM术语映射', term_review: '术语审核',
+  asr_prepare: 'ASR分段准备', asr: 'ASR语音识别', term_map: 'LLM术语映射', term_review: '术语审核',
   term_correct: '术语校正',
   subtitle_optimize: '字幕切分优化', resolve_import_video: '导入视频至达芬奇',
   resolve_import_srt: '导入字幕至达芬奇', resolve_render: '达芬奇渲染导出',
@@ -281,6 +324,11 @@ document.getElementById('startBtn').addEventListener('click', async () => {
   if (apiKey) form.append('api_key', apiKey);
   const systemPrompt = document.getElementById('systemPromptInput').value.trim();
   if (systemPrompt) form.append('system_prompt', systemPrompt);
+  if (document.getElementById('segmentedAsrInput').checked) {
+    form.append('segmented_asr', '1');
+    form.append('asr_max_workers', document.getElementById('asrWorkersInput').value || '1');
+    form.append('asr_segment_minutes', document.getElementById('asrSegmentMinutesInput').value || '10');
+  }
 
   try {
     const resp = await fetch('/api/upload', { method: 'POST', body: form });
@@ -306,6 +354,9 @@ function connectSSE(runId) {
 
       const step = evt.step;
       if (step === 'connected') return;
+      if (step === 'asr_prepare' || step === 'asr') {
+        handleAsrEvent(evt);
+      }
 
       // Update progress title
       if (STEP_LABELS[step]) {
@@ -316,7 +367,7 @@ function connectSSE(runId) {
       if (!seen[step]) {
         seen[step] = true;
         addStep(step, evt.status, evt.message);
-      } else if (evt.status === 'done' || evt.status === 'failed' || evt.status === 'complete') {
+      } else {
         updateStep(step, evt.status, evt.message);
       }
 
@@ -327,6 +378,10 @@ function connectSSE(runId) {
       }).length;
       const pct = Math.min(95, Math.round((doneCount / STEPS_ORDER.length) * 100));
       document.getElementById('progressFill').style.width = pct + '%';
+      if (step === 'asr' && evt.data && typeof evt.data.percent === 'number') {
+        const asrPct = Math.min(65, 15 + Math.round(evt.data.percent * 0.45));
+        document.getElementById('progressFill').style.width = asrPct + '%';
+      }
 
       if (evt.status === 'review') {
         document.getElementById('progressTitle').textContent = '等待术语审核';
@@ -367,8 +422,10 @@ function addStep(step, status, msg) {
   const list = document.getElementById('stepsList');
   const li = document.createElement('li');
   li.id = 'step-' + step;
-  const icon = status === 'done' ? '✅' : status === 'failed' ? '❌' : '🔄';
-  const cls = status === 'done' ? 'done' : status === 'failed' ? 'failed' : 'running';
+  const isFailed = status === 'failed' || String(status).endsWith('_failed');
+  const isDone = status === 'done' || status === 'complete';
+  const icon = isDone ? '✅' : isFailed ? '❌' : '🔄';
+  const cls = isDone ? 'done' : isFailed ? 'failed' : 'running';
   li.innerHTML = `<span class="status-icon ${cls}">${icon}</span>
                   <span class="step-name">${STEP_LABELS[step] || step}</span>
                   <span class="step-detail">${msg || ''}</span>`;
@@ -379,12 +436,55 @@ function updateStep(step, status, msg) {
   const li = document.getElementById('step-' + step);
   if (!li) return;
   const isDone = status === 'done' || status === 'complete';
-  const isFailed = status === 'failed';
+  const isFailed = status === 'failed' || String(status).endsWith('_failed');
   const icon = isDone ? '✅' : isFailed ? '❌' : '🔄';
   const cls = isDone ? 'done' : isFailed ? 'failed' : 'running';
   li.querySelector('.status-icon').textContent = icon;
   li.querySelector('.status-icon').className = 'status-icon ' + cls;
   li.querySelector('.step-detail').textContent = msg || '';
+}
+
+function handleAsrEvent(evt) {
+  const data = evt.data || {};
+  const panel = document.getElementById('asrSegmentsPanel');
+  if (evt.step === 'asr_prepare' && Array.isArray(data.segments)) {
+    panel.classList.remove('hidden');
+    panel.innerHTML = data.segments.map(seg => `
+      <div class="asr-segment-row" id="asr-segment-${seg.index}">
+        <div>第 ${seg.index} 段</div>
+        <div class="asr-segment-time">${escapeHtml(seg.start)} - ${escapeHtml(seg.end)}</div>
+        <div class="asr-segment-status">等待</div>
+      </div>
+    `).join('');
+  }
+  if (evt.step !== 'asr' || !data.segment) return;
+  panel.classList.remove('hidden');
+  let row = document.getElementById('asr-segment-' + data.segment);
+  if (!row) {
+    row = document.createElement('div');
+    row.id = 'asr-segment-' + data.segment;
+    row.className = 'asr-segment-row';
+    row.innerHTML = `<div>第 ${data.segment} 段</div><div class="asr-segment-time"></div><div class="asr-segment-status"></div>`;
+    panel.appendChild(row);
+  }
+  const timeEl = row.querySelector('.asr-segment-time');
+  const statusEl = row.querySelector('.asr-segment-status');
+  if (data.segment_start && data.segment_end) {
+    timeEl.textContent = `${data.segment_start} - ${data.segment_end}`;
+  }
+  const isFailed = evt.status === 'segment_failed';
+  const isDone = evt.status === 'segment_done';
+  statusEl.className = 'asr-segment-status ' + (isFailed ? 'failed' : isDone ? 'done' : 'running');
+  if (isFailed) {
+    statusEl.textContent = '失败';
+    row.title = data.error || evt.message || '';
+  } else if (isDone) {
+    statusEl.textContent = '完成';
+  } else if (typeof data.segment_percent === 'number') {
+    statusEl.textContent = data.segment_percent + '%';
+  } else {
+    statusEl.textContent = '运行中';
+  }
 }
 
 function showError(msg) {

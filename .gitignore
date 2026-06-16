@@ -23,6 +23,7 @@ mvp_pipeline/venv/
 davinci-resolve-mcp/
 
 # Pipeline runtime artifacts
+/input/
 mvp_pipeline/input/*
 !mvp_pipeline/input/.gitkeep
 mvp_pipeline/input/uploads/

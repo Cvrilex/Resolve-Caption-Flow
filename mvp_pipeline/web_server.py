@@ -231,7 +231,11 @@ def _run_pipeline_thread(video_path: Path, srt_path: Optional[Path], engine: str
                           pdf_path: Optional[Path] = None,
                           terms_path: Optional[Path] = None,
                           model: str = "", base_url: str = "",
-                          review_terms: bool = False) -> None:
+                          review_terms: bool = False,
+                          segmented_asr: bool = False,
+                          asr_max_workers: int = 1,
+                          asr_segment_minutes: float = 10.0,
+                          asr_max_segment_minutes: float = 12.0) -> None:
     """Run the MVP pipeline in a background thread."""
     global _current_job
     try:
@@ -245,6 +249,10 @@ def _run_pipeline_thread(video_path: Path, srt_path: Optional[Path], engine: str
         args.video = str(video_path)
         args.engine = engine
         args.srt = str(srt_path) if srt_path else None
+        args.segmented_asr = bool(segmented_asr and not srt_path)
+        args.asr_max_workers = max(1, int(asr_max_workers or 1))
+        args.asr_segment_minutes = max(1.0, float(asr_segment_minutes or 10.0))
+        args.asr_max_segment_minutes = max(args.asr_segment_minutes, float(asr_max_segment_minutes or 12.0))
         args.terms = str(terms_path) if terms_path else None
         args.context = str(pdf_path) if pdf_path and not terms_path else None
         args.llm_model = model or os.environ.get("OPENAI_MODEL", DEFAULT_LLM_MODEL)
@@ -296,6 +304,9 @@ def _run_pipeline_thread(video_path: Path, srt_path: Optional[Path], engine: str
                     "system_prompt": system_prompt,
                     "model": model,
                     "base_url": base_url,
+                    "segmented_asr": bool(segmented_asr),
+                    "asr_max_workers": max(1, int(asr_max_workers or 1)),
+                    "asr_segment_minutes": max(1.0, float(asr_segment_minutes or 10.0)),
                 }
             return
         with _job_lock:
@@ -331,7 +342,10 @@ async def index():
 async def upload(video: UploadFile = File(...), pdf: Optional[UploadFile] = File(None),
                  engine: str = Form("bcut"), api_key: str = Form(""),
                  system_prompt: str = Form(""), model: str = Form(""),
-                 base_url: str = Form("")):
+                 base_url: str = Form(""),
+                 segmented_asr: str = Form(""),
+                 asr_max_workers: int = Form(1),
+                 asr_segment_minutes: float = Form(10.0)):
     """Upload video and optional PDF, then start the pipeline."""
     global _current_job
 
@@ -376,6 +390,9 @@ async def upload(video: UploadFile = File(...), pdf: Optional[UploadFile] = File
 
     stem = video_path.stem.replace(" ", "_")
     log_path = LOG_DIR / f"{stem}-{run_id}.jsonl"
+    use_segmented_asr = segmented_asr in {"1", "true", "on", "yes"}
+    safe_asr_max_workers = max(1, int(asr_max_workers or 1))
+    safe_asr_segment_minutes = max(1.0, float(asr_segment_minutes or 10.0))
 
     with _job_lock:
         _current_job = {
@@ -385,6 +402,9 @@ async def upload(video: UploadFile = File(...), pdf: Optional[UploadFile] = File
             "run_id": run_id,
             "video": str(video_path),
             "template_project": str(DEFAULT_TEMPLATE_PROJECT) if DEFAULT_TEMPLATE_PROJECT.exists() else None,
+            "segmented_asr": use_segmented_asr,
+            "asr_max_workers": safe_asr_max_workers,
+            "asr_segment_minutes": safe_asr_segment_minutes,
         }
 
     # Start pipeline in background
@@ -404,6 +424,10 @@ async def upload(video: UploadFile = File(...), pdf: Optional[UploadFile] = File
             effective_model,
             effective_base_url,
             bool(pdf_path),
+            use_segmented_asr,
+            safe_asr_max_workers,
+            safe_asr_segment_minutes,
+            max(12.0, safe_asr_segment_minutes),
         ),
         daemon=True,
     )
@@ -484,6 +508,10 @@ async def confirm_terms(run_id: str, payload: dict[str, Any] = Body(...)):
             str(pending.get("model") or ""),
             str(pending.get("base_url") or ""),
             False,
+            False,
+            int(pending.get("asr_max_workers") or 1),
+            float(pending.get("asr_segment_minutes") or 10.0),
+            max(12.0, float(pending.get("asr_segment_minutes") or 10.0)),
         ),
         daemon=True,
     )

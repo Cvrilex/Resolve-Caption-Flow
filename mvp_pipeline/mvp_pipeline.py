@@ -222,6 +222,67 @@ def run_asr(audio_path: Path, srt_path: Path, engine: str, logger: Logger) -> Pa
     return srt_path
 
 
+def run_segmented_online_asr(video: Path, srt_path: Path, engine: str, args: argparse.Namespace, logger: Logger) -> Path:
+    src_dir = REPO_ROOT / "src"
+    if str(src_dir) not in sys.path:
+        sys.path.insert(0, str(src_dir))
+    try:
+        from drautocut.pipeline.long_asr import run_online_long_video_asr
+    except Exception as exc:
+        raise PipelineError(f"Failed to import segmented ASR pipeline: {exc}") from exc
+
+    def progress(event: dict[str, Any]) -> None:
+        payload = dict(event)
+        step = str(payload.pop("step", "asr"))
+        status = str(payload.pop("status", "progress"))
+        message = str(payload.pop("message", ""))
+        logger.event(step, status, message, **payload)
+
+    max_workers = max(1, int(getattr(args, "asr_max_workers", 1) or 1))
+    target_minutes = max(1.0, float(getattr(args, "asr_segment_minutes", 10.0) or 10.0))
+    max_minutes = max(target_minutes, float(getattr(args, "asr_max_segment_minutes", 12.0) or 12.0))
+    logger.event(
+        "asr_prepare",
+        "running",
+        "segmented online ASR enabled",
+        engine=engine,
+        max_workers=max_workers,
+        target_segment_minutes=target_minutes,
+        max_segment_minutes=max_minutes,
+    )
+    try:
+        result = run_online_long_video_asr(
+            video_path=video,
+            output_srt=srt_path,
+            work_dir=DEFAULT_WORK_DIR,
+            tool_dir=DEFAULT_TOOL_DIR,
+            engine=engine,
+            max_workers=max_workers,
+            target_segment_ms=int(target_minutes * 60 * 1000),
+            max_segment_ms=int(max_minutes * 60 * 1000),
+            progress=progress,
+        )
+    except Exception as exc:
+        failures = getattr(exc, "failures", None)
+        logger.event(
+            "asr",
+            "failed",
+            "segmented ASR failed",
+            error=str(exc),
+            failures=failures if isinstance(failures, list) else None,
+        )
+        raise
+    logger.event(
+        "asr",
+        "done",
+        "segmented SRT generated",
+        srt=str(result.srt_path),
+        cue_count=len(result.cues),
+        segment_count=len(result.segments),
+    )
+    return result.srt_path
+
+
 def correct_srt_with_terms(srt: Path, terms: Path, base: str, logger: Logger) -> tuple[Path, Path, dict[str, Any]]:
     try:
         from term_corrector import correct_srt  # type: ignore
@@ -1067,6 +1128,8 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
 
     if args.srt:
         logger.event("asr", "skipped", "using provided SRT", srt=str(srt), cue_count=count_srt_cues(srt))
+    elif getattr(args, "segmented_asr", False):
+        run_segmented_online_asr(video, srt, args.engine, args, logger)
     else:
         extract_audio(video, audio, logger)
         run_asr(audio, srt, args.engine, logger)
@@ -1196,6 +1259,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--video", default=str(ROOT / "input" / "3min.mp4"), help="Input video path.")
     parser.add_argument("--engine", choices=["bcut", "jianying"], default="bcut", help="Online ASR engine.")
     parser.add_argument("--srt", help="Skip ASR and use this existing SRT.")
+    parser.add_argument(
+        "--segmented-asr",
+        action="store_true",
+        help="Split long videos into audio segments and transcribe each segment independently.",
+    )
+    parser.add_argument(
+        "--asr-max-workers",
+        type=int,
+        default=1,
+        help="Segmented ASR concurrency. Keep 1 for online ASR unless the provider tolerates parallel jobs.",
+    )
+    parser.add_argument(
+        "--asr-segment-minutes",
+        type=float,
+        default=10.0,
+        help="Target length for each ASR segment when --segmented-asr is enabled.",
+    )
+    parser.add_argument(
+        "--asr-max-segment-minutes",
+        type=float,
+        default=12.0,
+        help="Hard maximum segment length for --segmented-asr.",
+    )
     parser.add_argument("--terms", help="JSON terminology replacement map to apply before Resolve import.")
     parser.add_argument(
         "--context",
