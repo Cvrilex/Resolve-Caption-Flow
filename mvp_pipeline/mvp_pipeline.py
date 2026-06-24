@@ -215,6 +215,8 @@ def run_asr(audio_path: Path, srt_path: Path, engine: str, logger: Logger) -> Pa
         if sign_service_url:
             online_asr.JianYingASR.SIGN_SERVICE_URL = sign_service_url
         result = online_asr.JianYingASR(str(audio_path)).run(callback=progress)
+    elif engine == "kuaishou":
+        result = online_asr.KuaiShouASR(str(audio_path)).run(callback=progress)
     else:
         raise PipelineError(f"Unknown ASR engine: {engine}")
     if not result.has_data():
@@ -223,9 +225,15 @@ def run_asr(audio_path: Path, srt_path: Path, engine: str, logger: Logger) -> Pa
     result.save(str(srt_path), fmt="srt")
     logger.event("asr", "done", "SRT generated", srt=str(srt_path), cue_count=len(result))
     return srt_path
+def segment_boundaries_ms(segments: list[Any]) -> list[int]:
+    return [
+        int(getattr(segment, "end_ms"))
+        for segment in segments[:-1]
+        if int(getattr(segment, "end_ms", 0)) > 0
+    ]
 
 
-def run_segmented_online_asr(video: Path, srt_path: Path, engine: str, args: argparse.Namespace, logger: Logger) -> Path:
+def run_segmented_online_asr(video: Path, srt_path: Path, engine: str, args: argparse.Namespace, logger: Logger) -> tuple[Path, list[int]]:
     src_dir = REPO_ROOT / "src"
     if str(src_dir) not in sys.path:
         sys.path.insert(0, str(src_dir))
@@ -287,7 +295,7 @@ def run_segmented_online_asr(video: Path, srt_path: Path, engine: str, args: arg
         cue_count=len(result.cues),
         segment_count=len(result.segments),
     )
-    return result.srt_path
+    return result.srt_path, segment_boundaries_ms(result.segments)
 
 
 def correct_srt_with_terms(srt: Path, terms: Path, base: str, logger: Logger) -> tuple[Path, Path, dict[str, Any]]:
@@ -307,13 +315,151 @@ def correct_srt_with_terms(srt: Path, terms: Path, base: str, logger: Logger) ->
         report=str(report),
         changed_cue_count=result.get("changed_cue_count"),
         replacement_count=result.get("replacement_count"),
+        unmatched_replacement_count=result.get("unmatched_replacement_count"),
+    )
+    return output, report, result
+
+
+def auto_confirm_terms(terms: Path, base: str, logger: Logger) -> Path:
+    try:
+        payload = json.loads(terms.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise PipelineError(f"Failed to read generated terms for auto confirmation: {exc}") from exc
+
+    replacements = payload.get("replacements", []) if isinstance(payload, dict) else []
+    if not isinstance(replacements, list):
+        raise PipelineError(f"Generated terms file has no replacements array: {terms}")
+
+    approved_replacements: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in replacements:
+        if not isinstance(item, dict):
+            continue
+        wrong = str(item.get("wrong", "")).strip()
+        correct = str(item.get("correct", "")).strip()
+        if not wrong or not correct or wrong == correct:
+            continue
+        key = (wrong, correct)
+        if key in seen:
+            continue
+        seen.add(key)
+        approved_replacements.append(
+            {
+                "wrong": wrong,
+                "correct": correct,
+                "aliases": item.get("aliases", []) if isinstance(item.get("aliases"), list) else [],
+                "patterns": item.get("patterns", []) if isinstance(item.get("patterns"), list) else [],
+                "confidence": item.get("confidence", ""),
+                "evidence": str(item.get("evidence", "")),
+                "note": str(item.get("note", "")),
+                "enabled": True,
+            }
+        )
+
+    approved = DEFAULT_WORK_DIR / f"{base}.terms.approved-auto.json"
+    approved_payload = {
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "source_terms": str(terms),
+        "approval_mode": "auto",
+        "replacements": approved_replacements,
+    }
+    approved.write_text(json.dumps(approved_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.event(
+        "term_review",
+        "auto_confirmed",
+        "terminology candidates auto-confirmed",
+        source_terms=str(terms),
+        approved_terms=str(approved),
+        replacement_count=len(approved_replacements),
+    )
+    return approved
+
+
+def repair_asr_boundaries(
+    srt: Path,
+    boundary_ms: list[int],
+    base: str,
+    args: argparse.Namespace,
+    logger: Logger,
+) -> tuple[Path, Path, dict[str, Any]]:
+    try:
+        from subtitle_optimizer import parse_filler_words, repair_asr_boundaries as repair_srt_asr_boundaries  # type: ignore
+    except Exception as exc:
+        raise PipelineError(f"Failed to import subtitle_optimizer: {exc}") from exc
+    api_key = args.llm_api_key or os.environ.get("OPENAI_API_KEY")
+    if not api_key and str(args.llm_base_url).startswith(("http://127.0.0.1", "http://localhost")):
+        api_key = "local"
+    output = DEFAULT_WORK_DIR / f"{base}.asr-boundary.srt"
+    report = DEFAULT_LOG_DIR / f"{base}.asr-boundary-report.json"
+    logger.event(
+        "asr_boundary_repair",
+        "running",
+        "repairing ASR segment boundary windows",
+        srt=str(srt),
+        output=str(output),
+        boundary_count=len(boundary_ms),
+        boundaries_ms=boundary_ms,
+        model=args.llm_model,
+        base_url=args.llm_base_url,
+        use_llm=not getattr(args, "no_asr_boundary_repair", False),
+    )
+
+    def log_progress(payload: dict[str, Any]) -> None:
+        data = dict(payload)
+        status = str(data.pop("status", "progress"))
+        message = str(data.pop("message", "ASR boundary repair progress"))
+        logger.event("asr_boundary_repair", status, message, **data)
+
+    try:
+        result = repair_srt_asr_boundaries(
+            srt=srt,
+            output=output,
+            report_path=report,
+            boundary_ms=boundary_ms,
+            max_chars=args.subtitle_max_chars,
+            min_chars=args.subtitle_min_chars,
+            punctuation=args.remove_punctuation,
+            model=args.llm_model,
+            base_url=args.llm_base_url,
+            api_key=api_key,
+            use_llm=not getattr(args, "no_asr_boundary_repair", False),
+            fillers=parse_filler_words(getattr(args, "remove_fillers", None)),
+            llm_timeout=int(getattr(args, "asr_boundary_llm_timeout", args.subtitle_llm_timeout) or args.subtitle_llm_timeout),
+            fallback_on_llm_error=True,
+            progress_callback=log_progress,
+        )
+    except Exception as exc:
+        fallback_report = {
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "source_srt": str(srt),
+            "output_srt": str(srt),
+            "boundary_ms": boundary_ms,
+            "boundary_count": len(boundary_ms),
+            "boundary_window_count": 0,
+            "boundary_changed_window_count": 0,
+            "llm_fallback_error_count": 1,
+            "errors": [{"error": str(exc), "fallback": "keep_input_srt"}],
+        }
+        report.write_text(json.dumps(fallback_report, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.event("asr_boundary_repair", "fallback", "ASR boundary repair failed; keeping input SRT", error=str(exc), report=str(report))
+        return srt, report, fallback_report
+
+    logger.event(
+        "asr_boundary_repair",
+        "done",
+        "ASR boundary repair complete",
+        output_srt=str(output),
+        report=str(report),
+        boundary_window_count=result.get("boundary_window_count"),
+        boundary_changed_window_count=result.get("boundary_changed_window_count"),
+        llm_fallback_error_count=result.get("llm_fallback_error_count"),
     )
     return output, report, result
 
 
 def optimize_subtitles(srt: Path, base: str, args: argparse.Namespace, logger: Logger) -> tuple[Path, Path, dict[str, Any]]:
     try:
-        from subtitle_optimizer import optimize_srt  # type: ignore
+        from subtitle_optimizer import parse_filler_words, optimize_srt  # type: ignore
     except Exception as exc:
         raise PipelineError(f"Failed to import subtitle_optimizer: {exc}") from exc
     api_key = args.llm_api_key or os.environ.get("OPENAI_API_KEY")
@@ -327,6 +473,7 @@ def optimize_subtitles(srt: Path, base: str, args: argparse.Namespace, logger: L
         output=str(output),
         max_chars=args.subtitle_max_chars,
         remove_punctuation=args.remove_punctuation,
+        remove_fillers=getattr(args, "remove_fillers", ""),
         model=args.llm_model,
         base_url=args.llm_base_url,
         use_llm=not args.no_subtitle_llm,
@@ -343,12 +490,15 @@ def optimize_subtitles(srt: Path, base: str, args: argparse.Namespace, logger: L
         output=output,
         report_path=report,
         max_chars=args.subtitle_max_chars,
+        min_chars=args.subtitle_min_chars,
         punctuation=args.remove_punctuation,
         model=args.llm_model,
         base_url=args.llm_base_url,
         api_key=api_key,
         use_llm=not args.no_subtitle_llm,
+        fillers=parse_filler_words(getattr(args, "remove_fillers", None)),
         allow_neighbor_rewrite=args.allow_neighbor_rewrite,
+        optimize_short=False,
         llm_timeout=args.subtitle_llm_timeout,
         progress_callback=log_progress,
     )
@@ -361,6 +511,83 @@ def optimize_subtitles(srt: Path, base: str, args: argparse.Namespace, logger: L
         punctuation_changed_cue_count=result.get("punctuation_changed_cue_count"),
         overlong_detected_count=result.get("overlong_detected_count"),
         overlong_changed_cue_count=result.get("overlong_changed_cue_count"),
+        short_detected_count=result.get("short_detected_count"),
+        short_changed_window_count=result.get("short_changed_window_count"),
+    )
+    return output, report, result
+
+
+def review_terms_with_llm(srt: Path, terms: Path | None, base: str, args: argparse.Namespace, logger: Logger) -> tuple[Path, Path, dict[str, Any]]:
+    try:
+        from llm_term_reviewer import review_srt_terms  # type: ignore
+    except Exception as exc:
+        raise PipelineError(f"Failed to import llm_term_reviewer: {exc}") from exc
+    api_key = args.llm_api_key or os.environ.get("OPENAI_API_KEY")
+    if not api_key and str(args.llm_base_url).startswith(("http://127.0.0.1", "http://localhost")):
+        api_key = "local"
+    output = DEFAULT_WORK_DIR / f"{base}.llm-reviewed.srt"
+    report = DEFAULT_LOG_DIR / f"{base}.llm-term-review-report.json"
+    logger.event(
+        "llm_term_review",
+        "running",
+        "reviewing subtitles for medical terminology patches",
+        srt=str(srt),
+        terms=str(terms) if terms else None,
+        output=str(output),
+        model=args.llm_model,
+        base_url=args.llm_base_url,
+        batch_size=getattr(args, "llm_term_review_batch_size", 100),
+    )
+
+    def log_progress(payload: dict[str, Any]) -> None:
+        data = dict(payload)
+        status = str(data.pop("status", "progress"))
+        message = str(data.pop("message", "LLM terminology review progress"))
+        logger.event("llm_term_review", status, message, **data)
+
+    try:
+        result = review_srt_terms(
+            srt=srt,
+            output=output,
+            report_path=report,
+            terms=terms,
+            model=args.llm_model,
+            base_url=args.llm_base_url,
+            api_key=api_key or "",
+            system_prompt=getattr(args, "llm_system_prompt", ""),
+            batch_size=int(getattr(args, "llm_term_review_batch_size", 100) or 100),
+            overlap=int(getattr(args, "llm_term_review_overlap", 5) or 5),
+            min_chars=int(getattr(args, "subtitle_min_chars", 5) or 5),
+            max_chars=int(getattr(args, "subtitle_max_chars", 20) or 20),
+            timeout=int(getattr(args, "llm_term_review_timeout", 45) or 45),
+            use_llm=not getattr(args, "no_llm_term_review", False),
+            fallback_on_llm_error=True,
+            progress_callback=log_progress,
+        )
+    except Exception as exc:
+        fallback_report = {
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "source_srt": str(srt),
+            "output_srt": str(srt),
+            "terms": str(terms) if terms else None,
+            "error_count": 1,
+            "errors": [{"error": str(exc), "fallback": "keep_input_srt"}],
+            "applied_patch_count": 0,
+            "rejected_patch_count": 0,
+        }
+        report.write_text(json.dumps(fallback_report, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.event("llm_term_review", "fallback", "LLM terminology review failed; keeping input SRT", error=str(exc), report=str(report))
+        return srt, report, fallback_report
+
+    logger.event(
+        "llm_term_review",
+        "done",
+        "LLM terminology review complete",
+        output_srt=str(output),
+        report=str(report),
+        applied_patch_count=result.get("applied_patch_count"),
+        rejected_patch_count=result.get("rejected_patch_count"),
+        error_count=result.get("error_count"),
     )
     return output, report, result
 
@@ -1161,26 +1388,44 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
     audio = DEFAULT_WORK_DIR / f"{base}.mp3"
     srt = Path(args.srt).expanduser().resolve() if args.srt else DEFAULT_WORK_DIR / f"{base}.{args.engine}.srt"
     original_srt: Path | None = None
+    asr_boundary_ms: list[int] = []
+    asr_boundary_report: Path | None = None
+    asr_boundary_result: dict[str, Any] | None = None
     correction_report: Path | None = None
     correction_result: dict[str, Any] | None = None
+    llm_term_review_report: Path | None = None
+    llm_term_review_result: dict[str, Any] | None = None
     subtitle_optimization_report: Path | None = None
     subtitle_optimization_result: dict[str, Any] | None = None
 
     if args.srt:
         logger.event("asr", "skipped", "using provided SRT", srt=str(srt), cue_count=count_srt_cues(srt))
     elif getattr(args, "segmented_asr", False):
-        run_segmented_online_asr(video, srt, args.engine, args, logger)
+        srt, asr_boundary_ms = run_segmented_online_asr(video, srt, args.engine, args, logger)
     else:
         extract_audio(video, audio, logger)
         run_asr(audio, srt, args.engine, logger)
 
     logger.event("srt", "ready", "SRT ready for Resolve", srt=str(srt), cue_count=count_srt_cues(srt))
+    if asr_boundary_ms and not getattr(args, "no_asr_boundary_repair", False):
+        original_srt = srt
+        srt, asr_boundary_report, asr_boundary_result = repair_asr_boundaries(srt, asr_boundary_ms, base, args, logger)
+        logger.event(
+            "srt",
+            "asr_boundary_repaired",
+            "ASR boundary-repaired SRT ready for terminology stages",
+            srt=str(srt),
+            cue_count=count_srt_cues(srt),
+            boundary_count=len(asr_boundary_ms),
+        )
     terms: Path | None = None
     if args.context:
         context = Path(args.context).expanduser().resolve()
         if not context.exists():
             raise PipelineError(f"Course context file not found: {context}")
         terms = generate_terms_from_context(context, srt, base, args, logger)
+        if not getattr(args, "review_terms", False):
+            terms = auto_confirm_terms(terms, base, logger)
     elif args.terms:
         terms = Path(args.terms).expanduser().resolve()
 
@@ -1190,6 +1435,8 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             "srt": str(srt),
             "terms": str(terms),
             "original_srt": str(original_srt) if original_srt else None,
+            "asr_boundary_report": str(asr_boundary_report) if asr_boundary_report else None,
+            "asr_boundary_result": asr_boundary_result,
             "needs_term_review": True,
             "log": str(logger.path),
         }
@@ -1203,18 +1450,45 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
         )
         return result
 
-    if terms:
-        if not terms.exists():
-            raise PipelineError(f"Terms file not found: {terms}")
-        original_srt = srt
-        srt, correction_report, correction_result = correct_srt_with_terms(srt, terms, base, logger)
-        logger.event("srt", "corrected", "corrected SRT ready for Resolve", srt=str(srt), cue_count=count_srt_cues(srt))
-
     if args.optimize_subtitles:
         if original_srt is None:
             original_srt = srt
         srt, subtitle_optimization_report, subtitle_optimization_result = optimize_subtitles(srt, base, args, logger)
-        logger.event("srt", "optimized", "optimized SRT ready for Resolve", srt=str(srt), cue_count=count_srt_cues(srt))
+        logger.event("srt", "optimized", "overlong-optimized SRT ready for terminology review", srt=str(srt), cue_count=count_srt_cues(srt))
+
+    if terms:
+        if not terms.exists():
+            raise PipelineError(f"Terms file not found: {terms}")
+        if original_srt is None:
+            original_srt = srt
+        srt, correction_report, correction_result = correct_srt_with_terms(srt, terms, base, logger)
+        logger.event("srt", "corrected", "corrected SRT ready for LLM terminology review", srt=str(srt), cue_count=count_srt_cues(srt))
+
+    if getattr(args, "llm_term_review", False):
+        if original_srt is None:
+            original_srt = srt
+        srt, llm_term_review_report, llm_term_review_result = review_terms_with_llm(srt, terms, base, args, logger)
+        logger.event("srt", "llm_term_reviewed", "LLM-reviewed SRT ready for Resolve", srt=str(srt), cue_count=count_srt_cues(srt))
+
+    if getattr(args, "srt_only", False):
+        result = {
+            "video": str(video),
+            "srt": str(srt),
+            "original_srt": str(original_srt) if original_srt else None,
+            "asr_boundary_report": str(asr_boundary_report) if asr_boundary_report else None,
+            "asr_boundary_result": asr_boundary_result,
+            "correction_report": str(correction_report) if correction_report else None,
+            "correction_result": correction_result,
+            "llm_term_review_report": str(llm_term_review_report) if llm_term_review_report else None,
+            "llm_term_review_result": llm_term_review_result,
+            "subtitle_optimization_report": str(subtitle_optimization_report) if subtitle_optimization_report else None,
+            "subtitle_optimization_result": subtitle_optimization_result,
+            "rendered": None,
+            "srt_only": True,
+            "log": str(logger.path),
+        }
+        logger.event("pipeline", "complete", "SRT-only pipeline complete; Resolve skipped", **result)
+        return result
 
     resolve = connect_resolve(logger)
     project_name = args.project_name or f"DRautocut_MVP_{run_id}"
@@ -1253,7 +1527,9 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             "video": str(video),
             "srt": str(srt),
             "original_srt": str(original_srt) if original_srt else None,
+            "asr_boundary_report": str(asr_boundary_report) if asr_boundary_report else None,
             "correction_report": str(correction_report) if correction_report else None,
+            "llm_term_review_report": str(llm_term_review_report) if llm_term_review_report else None,
             "subtitle_optimization_report": str(subtitle_optimization_report) if subtitle_optimization_report else None,
             "template_project": str(template_path) if template_path else None,
             "used_template_timeline": bool(args.use_template_timeline),
@@ -1280,8 +1556,11 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
         "video": str(video),
         "srt": str(srt),
         "original_srt": str(original_srt) if original_srt else None,
+        "asr_boundary_report": str(asr_boundary_report) if asr_boundary_report else None,
         "correction_report": str(correction_report) if correction_report else None,
         "correction_result": correction_result,
+        "llm_term_review_report": str(llm_term_review_report) if llm_term_review_report else None,
+        "llm_term_review_result": llm_term_review_result,
         "subtitle_optimization_report": str(subtitle_optimization_report) if subtitle_optimization_report else None,
         "subtitle_optimization_result": subtitle_optimization_result,
         "template_project": str(template_path) if template_path else None,
@@ -1297,7 +1576,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the MVP video -> ASR -> Resolve render pipeline.")
     parser.add_argument("--video", default=str(ROOT / "input" / "3min.mp4"), help="Input video path.")
-    parser.add_argument("--engine", choices=["bcut"], default="bcut", help="Online ASR engine.")
+    parser.add_argument("--engine", choices=["bcut", "jianying", "kuaishou"], default="bcut", help="Online ASR engine.")
     parser.add_argument("--srt", help="Skip ASR and use this existing SRT.")
     parser.add_argument(
         "--segmented-asr",
@@ -1322,6 +1601,17 @@ def parse_args() -> argparse.Namespace:
         default=12.0,
         help="Hard maximum segment length for --segmented-asr.",
     )
+    parser.add_argument(
+        "--no-asr-boundary-repair",
+        action="store_true",
+        help="Skip LLM semantic repair for three-cue windows around segmented ASR cut points.",
+    )
+    parser.add_argument(
+        "--asr-boundary-llm-timeout",
+        type=int,
+        default=30,
+        help="Per-boundary LLM timeout in seconds for segmented ASR cut-point repair.",
+    )
     parser.add_argument("--terms", help="JSON terminology replacement map to apply before Resolve import.")
     parser.add_argument(
         "--context",
@@ -1332,15 +1622,34 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--llm-api-key", default=os.environ.get("OPENAI_API_KEY"))
     parser.add_argument("--llm-system-prompt", default="", help="Custom system prompt for LLM terminology mapping.")
     parser.add_argument(
+        "--llm-term-review",
+        action="store_true",
+        help="After scripted terminology correction, batch-review subtitles with LLM patch output.",
+    )
+    parser.add_argument(
+        "--no-llm-term-review",
+        action="store_true",
+        help="Disable LLM calls inside the term-review stage while still writing a pass-through report.",
+    )
+    parser.add_argument("--llm-term-review-batch-size", type=int, default=100)
+    parser.add_argument("--llm-term-review-overlap", type=int, default=5)
+    parser.add_argument("--llm-term-review-timeout", type=int, default=45)
+    parser.add_argument(
         "--optimize-subtitles",
         action="store_true",
         help="After terminology correction, remove configured punctuation and split cues over the max length.",
     )
     parser.add_argument("--subtitle-max-chars", type=int, default=20, help="Cue text length threshold for cue splitting.")
+    parser.add_argument("--subtitle-min-chars", type=int, default=5, help="Cue text length threshold for short-cue window optimization.")
     parser.add_argument(
         "--remove-punctuation",
         default="，,",
         help="Characters to remove from subtitle text before overlong detection. Defaults to Chinese/English commas.",
+    )
+    parser.add_argument(
+        "--remove-fillers",
+        default="嗯,呃,啊",
+        help="Comma/space separated filler words to remove from subtitle text. Empty value disables filler cleanup.",
     )
     parser.add_argument(
         "--no-subtitle-llm",
@@ -1362,6 +1671,11 @@ def parse_args() -> argparse.Namespace:
         "--prepare-only",
         action="store_true",
         help="Prepare Resolve timeline with video and SRT, then stop before rendering.",
+    )
+    parser.add_argument(
+        "--srt-only",
+        action="store_true",
+        help="Stop after generating the final SRT and reports; do not connect to DaVinci Resolve.",
     )
     parser.add_argument(
         "--render-current",
@@ -1405,6 +1719,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Continue if Resolve rejects the requested render type through scripting.",
     )
+    parser.add_argument("--run-id", help="Override run id for deterministic tests and scripted runs.")
     return parser.parse_args()
 
 

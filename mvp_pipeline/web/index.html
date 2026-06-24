@@ -841,7 +841,7 @@
           </div>
           <div class="mini-actions">
             <button class="btn btn-secondary" id="addReplacementRuleBtn" type="button">添加替换条目</button>
-            <button class="btn btn-primary" id="runReplacementBtn" type="button">完成并生成新 SRT</button>
+            <button class="btn btn-primary" id="runReplacementBtn" type="button">完成并自动输出</button>
           </div>
           <div class="terms-note" id="replacementHint" style="margin-top:10px;">请先在“完成任务”里选择一个最终 SRT。</div>
           <div class="inline-result" id="replacementResult"></div>
@@ -866,6 +866,7 @@ const STATE = {
   module: 'env',
   subtab: 'overview',
   selectedRevisionSrt: '',
+  selectedRevisionVideo: '',
   finalSrts: [],
   finalSrtPage: 1,
   finalSrtPageSize: 3,
@@ -1742,7 +1743,8 @@ function renderFinalSrtPage() {
         <div>
           <div class="resume-item-main">${escapeHtml(item.srt_name || item.run_id)}</div>
           <div class="resume-item-meta">
-            ${escapeHtml(formatHistoryTime(item.updated_at))} · Run ${escapeHtml(item.run_id || '?')}
+            ${escapeHtml(formatHistoryTime(item.updated_at))} · Run ${escapeHtml(item.run_id || '?')}<br>
+            ${item.video_name ? '原视频：' + escapeHtml(item.video_name) : '未找到原视频，仍可只生成新 SRT'}
           </div>
           <div class="resume-item-badges">
             ${globalIndex === 0 ? '<span class="resume-badge ok">最新</span>' : ''}
@@ -1750,7 +1752,7 @@ function renderFinalSrtPage() {
           </div>
         </div>
         <div class="resume-item-action">
-          <button class="btn btn-secondary revise-btn" data-srt="${escapeHtml(item.srt)}">批量替换字幕</button>
+          <button class="btn btn-secondary revise-btn" data-srt="${escapeHtml(item.srt)}" data-video="${escapeHtml(item.video || '')}">批量替换字幕</button>
           <div class="resume-item-meta revision-item-result"></div>
         </div>
       </div>
@@ -1805,16 +1807,19 @@ document.getElementById('finalSrtList').addEventListener('click', (event) => {
   const button = event.target.closest('.revise-btn');
   if (!button) return;
   STATE.selectedRevisionSrt = button.dataset.srt || '';
+  STATE.selectedRevisionVideo = button.dataset.video || '';
   const result = document.getElementById('revisionResult');
   const itemResult = button.closest('.resume-item')?.querySelector('.revision-item-result');
   result.className = 'inline-result ok';
   result.textContent = `已选择字幕：${STATE.selectedRevisionSrt}`;
   if (itemResult) itemResult.textContent = '已选择，正在进入批量替换字幕';
   renderReplacementRows();
-  document.getElementById('replacementHint').textContent = `当前字幕：${STATE.selectedRevisionSrt}`;
+  document.getElementById('replacementHint').textContent = STATE.selectedRevisionVideo
+    ? `当前字幕：${STATE.selectedRevisionSrt} · 原视频：${STATE.selectedRevisionVideo}`
+    : `当前字幕：${STATE.selectedRevisionSrt} · 未找到原视频，完成后只会生成新 SRT`;
   const replacementResult = document.getElementById('replacementResult');
   replacementResult.className = 'inline-result';
-  replacementResult.textContent = '请添加替换条目，然后点击“完成并生成新 SRT”。';
+  replacementResult.textContent = '请添加替换条目，然后点击“完成并自动输出”。';
   setModule('history', 'replace');
 });
 
@@ -1852,17 +1857,22 @@ document.getElementById('runReplacementBtn').addEventListener('click', async () 
     return;
   }
   button.disabled = true;
-  button.textContent = '生成中...';
-  hint.textContent = '正在批量替换字幕并生成新 SRT...';
+  button.textContent = '处理中...';
+  hint.textContent = '正在批量替换字幕，随后会自动进入输出流程...';
   result.className = 'inline-result';
   result.textContent = '正在生成新 SRT...';
   try {
+    const payload = llmPayload();
     const resp = await fetch('/api/revise-srt', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         srt: STATE.selectedRevisionSrt,
+        video: STATE.selectedRevisionVideo,
         replacements,
+        render_after: true,
+        render_preset: payload.render_preset,
+        srt_only: false,
       }),
     });
     const text = await resp.text();
@@ -1877,7 +1887,17 @@ document.getElementById('runReplacementBtn').addEventListener('click', async () 
     const message = `已生成新 SRT：${data.output_srt} · 修改 ${data.changed_cue_count || 0} 条 · 替换 ${data.replacement_count || 0} 次`;
     result.className = 'inline-result ok';
     result.textContent = message;
-    hint.textContent = '新 SRT 已生成；后续会接入原视频自动输出流程。';
+    if (data.run_id) {
+      hint.textContent = '新 SRT 已生成，正在自动导入原视频并输出。';
+      STATE.runId = data.run_id;
+      resetProgressUI();
+      showView('progress');
+      document.getElementById('progressTitle').textContent = '批量替换完成，正在自动输出...';
+      document.getElementById('progressSubtitle').textContent = '本次不会重新跑 ASR、术语校正或 LLM 字幕优化，只导入修订 SRT 并输出。';
+      connectSSE(data.run_id);
+      return;
+    }
+    hint.textContent = data.render_error || '新 SRT 已生成，但没有启动自动输出。';
     await loadFinalSrts();
     result.className = 'inline-result ok';
     result.textContent = message;
@@ -1887,7 +1907,7 @@ document.getElementById('runReplacementBtn').addEventListener('click', async () 
     hint.textContent = '批量替换失败，请检查替换条目或后端日志。';
   } finally {
     button.disabled = false;
-    button.textContent = '完成并生成新 SRT';
+    button.textContent = '完成并自动输出';
   }
 });
 

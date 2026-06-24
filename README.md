@@ -24,6 +24,9 @@ Formal product development starts from the repository root under `src/drautocut/
 The MVP is kept intact as a reference implementation while reusable code is
 migrated into package modules.
 
+Product and workflow decisions are tracked in
+[`docs/business-workflow.md`](docs/business-workflow.md).
+
 Planned module boundaries:
 
 - `drautocut.domain`: shared data models and pure subtitle/term logic
@@ -46,4 +49,3 @@ http://127.0.0.1:8742/
 
 Runtime inputs, outputs, logs, SRT files, and rendered videos are intentionally
 ignored by git.
-

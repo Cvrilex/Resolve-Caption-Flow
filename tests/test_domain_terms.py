@@ -1,5 +1,11 @@
 from drautocut.domain.srt import Cue
-from drautocut.domain.terms import Replacement, apply_replacements, preview_replacements, replacements_from_payload
+from drautocut.domain.terms import (
+    Replacement,
+    apply_replacements,
+    builtin_unit_normalizations,
+    preview_replacements,
+    replacements_from_payload,
+)
 
 
 def test_replacements_from_payload_sorts_longer_wrong_terms_first() -> None:
@@ -50,3 +56,31 @@ def test_preview_replacements_lists_affected_cues_without_mutating() -> None:
     assert preview[0]["affected"][0]["after"] == "朱晨芳主任"
     assert cues[0].lines == ["朱成芳主任"]
 
+
+def test_builtin_unit_normalizations_handles_blood_pressure_variants() -> None:
+    text = "血压达到180毫米汞柱，或者一百八十或一百二十毫米汞柱，也可能是140 mm Hg，还有二百一百一十毫米汞柱。"
+
+    normalized, changes = builtin_unit_normalizations(text)
+
+    assert normalized == "血压达到180mmHg，或者180/120mmHg，也可能是140mmHg，还有200/110mmHg。"
+    assert [change["correct"] for change in changes] == ["200/110mmHg", "180/120mmHg", "180mmHg", "140mmHg"]
+
+
+def test_apply_replacements_runs_builtin_unit_normalization_without_terms() -> None:
+    cues = [
+        Cue(index="1", timing="00:00:00,000 --> 00:00:02,000", lines=["超过一百八十毫米汞柱"]),
+    ]
+
+    corrected, report = apply_replacements(cues, [])
+
+    assert corrected[0].lines == ["超过180mmHg"]
+    assert report[0]["changes"][0]["matched_by"] == ["builtin:mmHg_single"]
+
+
+def test_builtin_unit_normalizations_does_not_join_across_newlines() -> None:
+    text = "编号882\n或一百毫米汞柱需要重新评估"
+
+    normalized, changes = builtin_unit_normalizations(text)
+
+    assert normalized == "编号882\n或100mmHg需要重新评估"
+    assert [change["correct"] for change in changes] == ["100mmHg"]

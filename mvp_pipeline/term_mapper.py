@@ -29,10 +29,19 @@ class TermMapperError(RuntimeError):
 def read_context(path: Path) -> str:
     suffix = path.suffix.lower()
     if suffix in {".txt", ".md", ".markdown"}:
-        return path.read_text(encoding="utf-8")
+        return add_source_metadata(path, path.read_text(encoding="utf-8"))
     if suffix == ".pdf":
-        return extract_pdf_text(path)
+        return add_source_metadata(path, extract_pdf_text(path))
     raise TermMapperError(f"Unsupported context file type: {path.suffix}")
+
+
+def add_source_metadata(path: Path, text: str) -> str:
+    metadata = [
+        "## Course Source Metadata",
+        f"资料文件名：{path.name}",
+        f"资料标题：{path.stem}",
+    ]
+    return "\n".join(metadata) + "\n\n" + text
 
 
 def extract_pdf_text(path: Path) -> str:
@@ -109,11 +118,22 @@ def chat_completion(
     timeout: int = 45,
 ) -> str:
     url = base_url.rstrip("/") + "/chat/completions"
+    request_messages = [dict(message) for message in messages]
+    if is_local_base_url(base_url) and "qwen" in model.lower():
+        for message in reversed(request_messages):
+            if message.get("role") == "user":
+                content = message.get("content", "")
+                if "/no_think" not in content:
+                    message["content"] = f"{content}\n/no_think"
+                break
     payload: dict[str, Any] = {
         "model": model,
-        "messages": messages,
+        "messages": request_messages,
         "temperature": 0.1,
+        "max_tokens": int(os.environ.get("TERM_MAPPER_MAX_TOKENS", "4096")),
     }
+    if should_disable_thinking(model, base_url):
+        payload["thinking"] = {"type": "disabled"}
     if not is_local_base_url(base_url):
         payload["response_format"] = {"type": "json_object"}
     body = json.dumps(payload).encode("utf-8")
@@ -134,7 +154,22 @@ def chat_completion(
     except (TimeoutError, urllib.error.URLError, OSError) as exc:
         raise TermMapperError(f"LLM request failed: {exc}") from exc
     try:
-        return data["choices"][0]["message"]["content"]
+        message = data["choices"][0]["message"]
+        content = str(message.get("content") or "").strip()
+        if content:
+            return content
+        reasoning = str(message.get("reasoning_content") or "").strip()
+        if reasoning and "{" in reasoning and "}" in reasoning:
+            try:
+                extract_json_object(reasoning)
+                return reasoning
+            except Exception:
+                pass
+        if reasoning:
+            raise TermMapperError("LLM returned reasoning content but no final answer; thinking mode should be disabled for JSON tasks.")
+        return content
+    except TermMapperError:
+        raise
     except Exception as exc:
         raise TermMapperError(f"Unexpected LLM response shape: {data}") from exc
 
@@ -142,6 +177,16 @@ def chat_completion(
 def is_local_base_url(base_url: str) -> bool:
     host = (urlparse(base_url).hostname or "").lower()
     return host in {"127.0.0.1", "localhost", "::1"}
+
+
+def is_deepseek_base_url(base_url: str) -> bool:
+    host = (urlparse(base_url).hostname or "").lower()
+    return host == "api.deepseek.com" or host.endswith(".deepseek.com")
+
+
+def should_disable_thinking(model: str, base_url: str) -> bool:
+    model_name = model.lower()
+    return is_deepseek_base_url(base_url) and ("v4" in model_name or "reasoner" in model_name)
 
 
 def extract_json_object(raw: str) -> str:
@@ -182,6 +227,16 @@ def normalize_terms_payload(raw: str) -> dict[str, Any]:
             {
                 "wrong": wrong,
                 "correct": correct,
+                "aliases": [
+                    str(v).strip()
+                    for v in item.get("aliases", []) or []
+                    if str(v).strip() and str(v).strip() not in {wrong, correct}
+                ][:8],
+                "patterns": [
+                    str(v).strip()
+                    for v in item.get("patterns", []) or []
+                    if str(v).strip()
+                ][:5],
                 "confidence": item.get("confidence", "medium"),
                 "evidence": str(item.get("evidence", ""))[:300],
                 "note": str(item.get("note", ""))[:300],
@@ -210,6 +265,42 @@ def merge_replacements(term_lists: list[list[dict[str, Any]]]) -> list[dict[str,
     return merged
 
 
+def _compact_for_membership(text: str) -> str:
+    return re.sub(r"\s+", "", text).lower()
+
+
+def filter_context_only_replacements(payload: dict[str, Any], context_text: str) -> dict[str, Any]:
+    context_compact = _compact_for_membership(context_text)
+    kept: list[dict[str, Any]] = []
+    dropped: list[dict[str, Any]] = []
+    for item in payload.get("replacements", []):
+        wrong = str(item.get("wrong", "")).strip()
+        correct = str(item.get("correct", "")).strip()
+        wrong_compact = _compact_for_membership(wrong)
+        correct_compact = _compact_for_membership(correct)
+        reason = ""
+        if not wrong or not correct or wrong == correct:
+            reason = "empty_or_same"
+        elif correct_compact not in context_compact:
+            reason = "correct_not_in_pdf_context"
+
+        if reason:
+            dropped.append({**item, "drop_reason": reason})
+        else:
+            if wrong_compact in context_compact:
+                item = {
+                    **item,
+                    "review_warning": "wrong_also_appears_in_pdf_context",
+                }
+            kept.append(item)
+
+    return {
+        **payload,
+        "replacements": kept,
+        "dropped_replacements": dropped,
+    }
+
+
 def build_messages(context_text: str, srt_text: str, system_prompt: str = "") -> list[dict[str, str]]:
     system = system_prompt.strip() or (
         "你是医疗课程中文字幕校对助手。任务是基于课程资料和ASR字幕，"
@@ -225,6 +316,8 @@ def build_messages(context_text: str, srt_text: str, system_prompt: str = "") ->
     {{
       "wrong": "字幕里的错误写法",
       "correct": "标准写法",
+      "aliases": ["同一错误的其他写法，可为空数组"],
+      "patterns": ["安全正则，可为空数组"],
       "confidence": "high|medium|low",
       "evidence": "来自课程资料或字幕上下文的简短依据",
       "note": "为什么替换"
@@ -237,6 +330,8 @@ def build_messages(context_text: str, srt_text: str, system_prompt: str = "") ->
 - 不要输出低置信替换。
 - 不要输出会改变医学含义的猜测。
 - wrong 必须出现在 ASR 字幕中。
+- aliases 只放同一个错误的其他高置信写法，例如空格、大小写、中文单位差异。
+- patterns 只用于非常安全的单位或缩写归一化；不确定就留空数组。
 - 术语表要尽量精简，不要把课程资料里的名词原样整理成词库。
 - 优先保留人名、地名、学校名、医院/机构名、会议/指南名、英文缩写、药物名、检查/术式名、罕见病名、冷门或容易被 ASR 误识别的专业名词。
 - 学科中常见且 ASR 不容易混淆的普通术语不要输出，例如常见疾病大类、常规检查、普通症状、通用动词和泛化概念。
@@ -252,6 +347,124 @@ ASR字幕：
 {srt_text}
 """.strip()
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def build_context_only_messages(context_text: str, system_prompt: str = "") -> list[dict[str, str]]:
+    system = system_prompt.strip() or (
+        "你是医疗课程术语整理助手。任务是只基于课程PDF资料，生成精简、可审核的课程标准术语表。"
+        "只输出JSON。不要逐句改写，不要翻译全文。"
+    )
+    user = f"""
+请从下面课程资料中提取高价值课程术语，并为后续ASR字幕校对准备候选替换表。
+
+输出 JSON：
+{{
+  "replacements": [
+    {{
+      "wrong": "可能的ASR错误写法或别名",
+      "correct": "课程中的标准写法",
+      "aliases": ["其他可能错误写法，可为空数组"],
+      "patterns": ["非常安全的正则，可为空数组"],
+      "confidence": "high|medium|low",
+      "evidence": "来自课程资料的简短依据",
+      "note": "为什么需要关注"
+    }}
+  ]
+}}
+
+约束：
+- 这是 ASR 前的课程术语表，不要依赖字幕实际错词。
+- wrong 可以是标准术语的常见同音误写、口语误识别、大小写/空格差异或中文别名。
+- 如果无法判断可能错写，wrong 可填写最可能被ASR混淆的短别名，但不要让 wrong 与 correct 完全相同。
+- correct 必须是课程资料中真实出现的标准写法，不要编造课程资料中没有的写法。
+- 课程资料包括 PDF 正文和上方的课程源文件名/资料标题；讲者姓名、课程名如果只出现在文件名中，也可以作为 correct 来源。
+- wrong 不能是课程资料中真实出现的医学同义词、旧称、上位词或另一种正确表达。
+- 不要输出“高血压危象->高血压急症”这类概念替换；这不是 ASR 错词。
+- 推荐优先输出容易被 ASR 误写的人名和专名，例如“陈欣->陈歆”“黄启芳->黄绮芳”“瑞金->瑞金医院”。
+- aliases 只放同一个术语的其他高置信写法。
+- patterns 只用于非常安全的单位、缩写、大小写或空格归一化。
+- 优先保留人名、地名、学校名、医院/机构名、指南名、英文缩写、药物名、检查/术式名、罕见病名、冷门或容易被ASR误识别的专业名词。
+- 学科中常见且不容易混淆的普通术语不要输出。
+- 不要输出低置信替换。
+- 每个术语尽量短，宁缺毋滥。
+- 最多输出 8 条 replacements；如果候选很多，只保留最有可能被 ASR 误写、且用户最需要提前审核的 8 条。
+- wrong 和 correct 不能完全相同。
+
+课程资料：
+{context_text}
+""".strip()
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def generate_terms_from_context(
+    context: Path,
+    output: Path,
+    model: str,
+    base_url: str,
+    api_key: str,
+    system_prompt: str = "",
+    timeout: int = 45,
+    retries: int = 1,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    context_limit, _ = compaction_limits(base_url)
+    context_text = compact_context(read_context(context), max_chars=context_limit)
+    if progress_callback:
+        progress_callback({
+            "status": "planned",
+            "message": "PDF terminology extraction planned",
+            "context_chars": len(context_text),
+        })
+
+    last_error: Exception | None = None
+    payload: dict[str, Any] | None = None
+    for attempt in range(1, retries + 2):
+        if progress_callback:
+            progress_callback({
+                "status": "progress",
+                "message": "extracting terminology from PDF",
+                "current": attempt,
+                "total": retries + 1,
+                "percent": round(attempt * 100 / max(1, retries + 1)),
+            })
+        try:
+            raw = chat_completion(
+                build_context_only_messages(context_text, system_prompt),
+                model=model,
+                base_url=base_url,
+                api_key=api_key,
+                timeout=timeout,
+            )
+            payload = filter_context_only_replacements(normalize_terms_payload(raw), context_text)
+            last_error = None
+            break
+        except Exception as exc:
+            last_error = exc
+            if progress_callback:
+                progress_callback({
+                    "status": "chunk_retry" if attempt <= retries else "chunk_failed",
+                    "message": "PDF terminology extraction failed; retrying" if attempt <= retries else "PDF terminology extraction failed",
+                    "attempt": attempt,
+                    "max_attempts": retries + 1,
+                    "error": str(exc),
+                })
+
+    if payload is None:
+        raise TermMapperError(f"PDF terminology extraction failed: {last_error}")
+
+    payload["source_context"] = str(context)
+    payload["mode"] = "pdf_preflight"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if progress_callback:
+        progress_callback({
+            "status": "done",
+            "message": "PDF terminology extraction complete",
+            "replacement_count": len(payload.get("replacements", [])),
+            "dropped_replacement_count": len(payload.get("dropped_replacements", [])),
+            "terms": str(output),
+        })
+    return payload
 
 
 def generate_terms(
@@ -353,7 +566,8 @@ def generate_terms(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate a terminology replacement JSON from course context and SRT.")
     parser.add_argument("--context", required=True, help="Course context file path (.txt/.md for this MVP).")
-    parser.add_argument("--srt", required=True, help="ASR SRT path.")
+    parser.add_argument("--srt", help="ASR SRT path.")
+    parser.add_argument("--context-only", action="store_true", help="Generate a PDF/course terminology table before ASR.")
     parser.add_argument("--output", default=str(DEFAULT_WORK_DIR / "terms.generated.json"), help="Output terms JSON path.")
     parser.add_argument("--model", default=os.environ.get("OPENAI_MODEL", "gpt-4.1-mini"))
     parser.add_argument("--base-url", default=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"))
@@ -370,8 +584,13 @@ def main() -> int:
     args = parse_args()
     if args.print_prompt:
         context_text = compact_context(read_context(Path(args.context).expanduser().resolve()))
-        srt_text = compact_srt_text(Path(args.srt).expanduser().resolve())
-        print(json.dumps(build_messages(context_text, srt_text, args.system_prompt), ensure_ascii=False, indent=2))
+        if args.context_only:
+            print(json.dumps(build_context_only_messages(context_text, args.system_prompt), ensure_ascii=False, indent=2))
+        else:
+            if not args.srt:
+                raise TermMapperError("--srt is required unless --context-only is set.")
+            srt_text = compact_srt_text(Path(args.srt).expanduser().resolve())
+            print(json.dumps(build_messages(context_text, srt_text, args.system_prompt), ensure_ascii=False, indent=2))
         return 0
     if not args.api_key:
         raise TermMapperError("Missing API key. Set OPENAI_API_KEY or pass --api-key.")
@@ -380,18 +599,33 @@ def main() -> int:
         def emit_progress(payload: dict[str, Any]) -> None:
             print(json.dumps(payload, ensure_ascii=False), file=sys.stderr, flush=True)
         progress_callback = emit_progress
-    result = generate_terms(
-        context=Path(args.context).expanduser().resolve(),
-        srt=Path(args.srt).expanduser().resolve(),
-        output=Path(args.output).expanduser().resolve(),
-        model=args.model,
-        base_url=args.base_url,
-        api_key=args.api_key,
-        system_prompt=args.system_prompt,
-        timeout=args.timeout,
-        retries=max(0, args.retries),
-        progress_callback=progress_callback,
-    )
+    if args.context_only:
+        result = generate_terms_from_context(
+            context=Path(args.context).expanduser().resolve(),
+            output=Path(args.output).expanduser().resolve(),
+            model=args.model,
+            base_url=args.base_url,
+            api_key=args.api_key,
+            system_prompt=args.system_prompt,
+            timeout=args.timeout,
+            retries=max(0, args.retries),
+            progress_callback=progress_callback,
+        )
+    else:
+        if not args.srt:
+            raise TermMapperError("--srt is required unless --context-only is set.")
+        result = generate_terms(
+            context=Path(args.context).expanduser().resolve(),
+            srt=Path(args.srt).expanduser().resolve(),
+            output=Path(args.output).expanduser().resolve(),
+            model=args.model,
+            base_url=args.base_url,
+            api_key=args.api_key,
+            system_prompt=args.system_prompt,
+            timeout=args.timeout,
+            retries=max(0, args.retries),
+            progress_callback=progress_callback,
+        )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 

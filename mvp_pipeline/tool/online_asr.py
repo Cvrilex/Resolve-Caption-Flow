@@ -3,12 +3,13 @@
 在线 ASR 接口 — 独立版（零项目依赖，可直接拷贝使用）
 ============================================================
 
-提供两个免费的在线语音识别接口：
+提供多个免费的在线语音识别接口：
 
   接口          │ 类名          │ 提供商       │ 是否需要外部服务
   ──────────────┼───────────────┼──────────────┼─────────────────
   B 接口 (必剪) │ BcutASR       │ Bilibili     │ 不需要，直接可用
   J 接口 (剪映) │ JianYingASR   │ 字节跳动     │ 需签名服务（见下方说明）
+  K 接口 (快手) │ KuaiShouASR   │ 快手         │ 不需要，但当前接口返回禁用
 
 依赖（仅一个）:
     pip install requests
@@ -94,6 +95,7 @@
   python online_asr.py audio.mp3            # 默认必剪
   python online_asr.py audio.mp3 bcut       # 必剪
   python online_asr.py audio.mp3 jianying   # 剪映
+  python online_asr.py audio.mp3 kuaishou   # 快手
   运行后在同目录下生成 audio.{引擎名}.srt
 """
 
@@ -815,6 +817,50 @@ class JianYingASR(BaseASR):
 
 
 # ============================================================================
+# KuaiShouASR - 快手 ASR
+# ============================================================================
+
+class KuaiShouASR(BaseASR):
+    """快手在线字幕接口。
+
+    该接口来自 AsrTools 的 K 接口实现，调用方式简单，不需要签名服务。
+    2026-06-25 实测接口返回 `code=501, msg=效果subtitle_generate禁用`，
+    因此当前 WebUI 会将其标记为不可用；保留适配器用于后续接口恢复验证。
+    """
+
+    API_URL = "https://ai.kuaishou.com/api/effects/subtitle_generate"
+
+    def _run(self, callback=None, **kwargs) -> dict:
+        if callback:
+            callback(*ASRStatus.UPLOADING.callback_tuple())
+        if not self.file_binary:
+            raise ValueError("没有音频数据")
+        files = [("file", ("audio.mp3", self.file_binary, "audio/mpeg"))]
+        response = requests.post(
+            self.API_URL,
+            data={"typeId": "1"},
+            files=files,
+            timeout=int(kwargs.get("timeout", 60)),
+        )
+        response.raise_for_status()
+        data = response.json()
+        if data.get("code") != 0:
+            raise RuntimeError(f"快手 ASR 不可用：{data.get('msg') or data}")
+        if not isinstance(data.get("data"), dict) or not isinstance(data["data"].get("text"), list):
+            raise RuntimeError(f"快手 ASR 返回格式异常：{data}")
+        if callback:
+            callback(*ASRStatus.COMPLETED.callback_tuple())
+        return data
+
+    def _make_segments(self, resp_data: dict) -> List[ASRDataSeg]:
+        return [
+            ASRDataSeg(item["text"], item["start_time"], item["end_time"])
+            for item in resp_data["data"]["text"]
+            if item.get("text")
+        ]
+
+
+# ============================================================================
 # 便捷函数
 # ============================================================================
 
@@ -828,6 +874,11 @@ def jianying_transcribe(audio: Union[str, bytes], word_level: bool = False) -> A
     return JianYingASR(audio, need_word_time_stamp=word_level).run()
 
 
+def kuaishou_transcribe(audio: Union[str, bytes]) -> ASRData:
+    """使用快手 ASR 转写音频"""
+    return KuaiShouASR(audio).run()
+
+
 # ============================================================================
 # 命令行入口
 # ============================================================================
@@ -836,9 +887,10 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) < 2:
-        print("用法: python online_asr.py <音频文件> [bcut|jianying]")
+        print("用法: python online_asr.py <音频文件> [bcut|jianying|kuaishou]")
         print("  bcut       - 使用必剪 ASR (默认)")
         print("  jianying   - 使用剪映 ASR")
+        print("  kuaishou   - 使用快手 ASR")
         sys.exit(1)
 
     audio_file = sys.argv[1]
@@ -848,6 +900,8 @@ if __name__ == "__main__":
         result = bcut_transcribe(audio_file)
     elif engine == "jianying":
         result = jianying_transcribe(audio_file)
+    elif engine == "kuaishou":
+        result = kuaishou_transcribe(audio_file)
     else:
         print(f"未知引擎: {engine}")
         sys.exit(1)
