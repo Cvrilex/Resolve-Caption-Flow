@@ -1,4 +1,4 @@
-from drautocut.integrations.ffmpeg import parse_silencedetect_output
+from caption_core.integrations.ffmpeg import parse_silencedetect_output
 
 
 def test_parse_silencedetect_output_returns_ranges_in_ms() -> None:

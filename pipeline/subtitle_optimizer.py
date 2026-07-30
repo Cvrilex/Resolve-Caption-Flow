@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import urllib.error
@@ -14,25 +15,44 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
 
-from term_corrector import (
-    Cue,
-    builtin_medical_term_normalizations,
-    builtin_unit_normalizations,
-    parse_srt,
-    write_srt,
-)
+try:  # Supports both package imports and direct script execution.
+    from .term_corrector import (
+        Cue,
+        builtin_medical_term_normalizations,
+        builtin_unit_normalizations,
+        parse_srt,
+        write_srt,
+    )
+except ImportError:  # pragma: no cover - direct script execution path
+    from term_corrector import (
+        Cue,
+        builtin_medical_term_normalizations,
+        builtin_unit_normalizations,
+        parse_srt,
+        write_srt,
+    )
 
 
-ROOT = Path(__file__).resolve().parent
-DEFAULT_WORK_DIR = ROOT / "work"
-DEFAULT_REMOVE_PUNCTUATION = "，,"
-DEFAULT_REMOVE_FILLER_WORDS = ("嗯", "呃", "啊")
+PIPELINE_DIR = Path(__file__).resolve().parent
+REPO_ROOT = PIPELINE_DIR.parent
+DEFAULT_WORK_DIR = REPO_ROOT / "data" / "work"
+DEFAULT_REMOVE_PUNCTUATION = "。"
+DEFAULT_REMOVE_FILLER_WORDS = ("嗯", "呃", "啊", "呢")
 DEFAULT_REMOVE_FILLERS_TEXT = ",".join(DEFAULT_REMOVE_FILLER_WORDS)
+DEFAULT_COMMA_AS_SPACE = True
+DEFAULT_TRIM_TRAILING_SYMBOLS = True
+TRAILING_SUBTITLE_SYMBOLS = "，,。.;；:：!?！？、"
+LEADING_SUBTITLE_PUNCTUATION = "，,。.;；:：!?！？、"
+HANGING_VALUE_CONNECTORS = ("/", "／")
+VALUE_CONTINUATION_RE = re.compile(r"^[0-9０-９]")
+VALUE_PREFIX_RE = re.compile(r"^([0-9０-９]+(?:[~～\-—–][0-9０-９]+)?(?:\s*(?:mmHg|毫米汞柱))?)(.*)$", re.IGNORECASE)
 PROTECTED_BOUNDARY_TERMS = (
     "高血压",
     "急症",
     "亚急症",
     "靶器官",
+    "危险因素",
+    "心血管危险因素",
     "硝普钠",
     "硝苯地平",
     "美托洛尔",
@@ -97,16 +117,32 @@ def interpolate_timestamps(start_ts: str, end_ts: str, segments: list[str]) -> l
     return timings
 
 
-def visible_len(text: str) -> int:
-    return len(re.sub(r"\s+", "", text))
+def visible_len(text: str) -> float:
+    length = 0.0
+    for char in re.sub(r"\s+", "", text):
+        if char.isdigit() or not ("\u4e00" <= char <= "\u9fff" or char.isalpha()):
+            length += 0.5
+        else:
+            length += 1.0
+    return length
 
 
-def clean_punctuation(text: str, punctuation: str) -> str:
+def clean_punctuation(text: str, punctuation: str, comma_as_space: bool = False) -> str:
     if not punctuation:
-        return text
-    table = str.maketrans("", "", punctuation)
-    cleaned = text.translate(table)
-    cleaned = re.sub(r"(?<=[一-鿿])\s+(?=[一-鿿])", "", cleaned)
+        punctuation = ""
+    comma_placeholder = " __COMMA_SPACE__ "
+    if comma_as_space:
+        text = re.sub(r"[，,]+", comma_placeholder, text)
+        punctuation = punctuation.replace("，", "").replace(",", "")
+    if not punctuation:
+        cleaned = text
+    else:
+        table = str.maketrans("", "", punctuation)
+        cleaned = text.translate(table)
+    if not comma_as_space:
+        cleaned = re.sub(r"(?<=[一-鿿])\s+(?=[一-鿿])", "", cleaned)
+    if comma_as_space:
+        cleaned = cleaned.replace(comma_placeholder.strip(), " ")
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
     cleaned = re.sub(r"\s+\n", "\n", cleaned)
     cleaned = re.sub(r"\n\s+", "\n", cleaned)
@@ -118,6 +154,53 @@ def clean_filler_words(text: str, fillers: tuple[str, ...] = DEFAULT_REMOVE_FILL
     for filler in fillers:
         cleaned = cleaned.replace(filler, "")
     return cleaned.strip()
+
+
+def trim_subtitle_edge_symbols(
+    text: str,
+    trailing_symbols: str = TRAILING_SUBTITLE_SYMBOLS,
+    leading_symbols: str = LEADING_SUBTITLE_PUNCTUATION,
+) -> str:
+    cleaned = text.rstrip()
+    while cleaned and cleaned[0] in leading_symbols:
+        cleaned = cleaned[1:].lstrip()
+    while cleaned and cleaned[-1] in trailing_symbols:
+        cleaned = cleaned[:-1].rstrip()
+    return cleaned
+
+
+def repair_hanging_value_connectors(segments: list[str], max_chars: int, tolerance: int = 8) -> list[str]:
+    repaired: list[str] = []
+    index = 0
+    soft_limit = max_chars + max(0, tolerance)
+    while index < len(segments):
+        current = str(segments[index]).strip()
+        if (
+            index + 1 < len(segments)
+            and current.endswith(HANGING_VALUE_CONNECTORS)
+            and VALUE_CONTINUATION_RE.match(str(segments[index + 1]).strip())
+        ):
+            next_segment = str(segments[index + 1]).strip()
+            combined = f"{current}{next_segment}"
+            if visible_len(combined) <= soft_limit:
+                repaired.append(combined)
+                index += 2
+                continue
+            match = VALUE_PREFIX_RE.match(next_segment)
+            if match:
+                prefix = match.group(1).strip()
+                rest = match.group(2).strip()
+                if prefix:
+                    repaired.append(f"{current}{prefix}")
+                    if rest:
+                        segments[index + 1] = rest
+                        index += 1
+                    else:
+                        index += 2
+                    continue
+        repaired.append(current)
+        index += 1
+    return repaired
 
 
 def parse_filler_words(value: str | None) -> tuple[str, ...]:
@@ -133,10 +216,18 @@ def parse_filler_words(value: str | None) -> tuple[str, ...]:
     return tuple(words)
 
 
-def clean_subtitle_text(text: str, punctuation: str, fillers: tuple[str, ...] = DEFAULT_REMOVE_FILLER_WORDS) -> str:
-    cleaned = clean_filler_words(clean_punctuation(text, punctuation), fillers)
+def clean_subtitle_text(
+    text: str,
+    punctuation: str,
+    fillers: tuple[str, ...] = DEFAULT_REMOVE_FILLER_WORDS,
+    comma_as_space: bool = False,
+    trim_trailing_symbols: bool = DEFAULT_TRIM_TRAILING_SYMBOLS,
+) -> str:
+    cleaned = clean_filler_words(clean_punctuation(text, punctuation, comma_as_space=comma_as_space), fillers)
     cleaned, _term_changes = builtin_medical_term_normalizations(cleaned)
     cleaned, _unit_changes = builtin_unit_normalizations(cleaned)
+    if trim_trailing_symbols:
+        cleaned = trim_subtitle_edge_symbols(cleaned)
     return cleaned.strip()
 
 
@@ -339,14 +430,14 @@ def split_preserving_english_spaces(text: str, max_chars: int) -> list[str]:
         return [text] if text else []
 
     tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9+./-]*|[\u4e00-\u9fff]|[^\s]", text)
-    total_len = sum(max(1, visible_len(token)) for token in tokens)
-    segment_count = max(1, (total_len + max_chars - 1) // max_chars)
-    target_len = max(1, (total_len + segment_count - 1) // segment_count)
+    total_len = sum(max(0.5, visible_len(token)) for token in tokens)
+    segment_count = max(1, math.ceil(total_len / max_chars))
+    target_len = max(1.0, total_len / segment_count)
     segments: list[str] = []
     current = ""
     current_len = 0
     for token in tokens:
-        token_len = max(1, visible_len(token))
+        token_len = max(0.5, visible_len(token))
         joiner = " " if current and re.match(r"^[A-Za-z0-9]", token) and re.search(r"[A-Za-z0-9+./-]$", current) else ""
         candidate = f"{current}{joiner}{token}" if current else token
         if current and current_len + token_len > target_len and len(segments) < segment_count - 1:
@@ -578,6 +669,46 @@ def _cue_gap_ms(cues: list[Cue], left_idx: int, right_idx: int) -> int:
     return right_start - left_end
 
 
+def merge_hanging_value_connector_cues(
+    cues: list[Cue],
+    max_chars: int,
+    max_gap_ms: int = 700,
+    tolerance: int = 8,
+) -> tuple[list[Cue], list[dict[str, Any]]]:
+    rebuilt = list(cues)
+    changes: list[dict[str, Any]] = []
+    soft_limit = max_chars + max(0, tolerance)
+    index = 0
+    while index + 1 < len(rebuilt):
+        current = rebuilt[index]
+        next_cue = rebuilt[index + 1]
+        current_text = _cue_text(current)
+        next_text = _cue_text(next_cue)
+        if not current_text.endswith(HANGING_VALUE_CONNECTORS) or not VALUE_CONTINUATION_RE.match(next_text):
+            index += 1
+            continue
+        current_start, current_end = _cue_start_end(current)
+        next_start, next_end = _cue_start_end(next_cue)
+        gap = _ts_to_ms(next_start) - _ts_to_ms(current_end)
+        combined = f"{current_text}{next_text}"
+        if gap < 0 or gap > max_gap_ms or visible_len(combined) > soft_limit:
+            index += 1
+            continue
+        rebuilt[index] = Cue(index="", timing=f"{current_start} --> {next_end}", lines=[combined])
+        del rebuilt[index + 1]
+        changes.append({
+            "cue_position": index + 1,
+            "before": [current_text, next_text],
+            "after": combined,
+            "timing": f"{current_start} --> {next_end}",
+            "length": visible_len(combined),
+        })
+    if changes:
+        for number, cue in enumerate(rebuilt, start=1):
+            cue.index = str(number)
+    return rebuilt, changes
+
+
 def _expand_issue_window(
     idx: int,
     cue_count: int,
@@ -670,6 +801,7 @@ def repair_asr_boundary_windows(
     max_chars: int,
     punctuation: str,
     fillers: tuple[str, ...],
+    comma_as_space: bool,
     model: str,
     base_url: str,
     api_key: str | None,
@@ -760,11 +892,16 @@ def repair_asr_boundary_windows(
                     "error": str(exc),
                 })
 
-        segs = [clean_subtitle_text(seg, punctuation, fillers) for seg in segs if clean_subtitle_text(seg, punctuation, fillers)]
+        segs = [
+            clean_subtitle_text(seg, punctuation, fillers, comma_as_space=comma_as_space)
+            for seg in segs
+            if clean_subtitle_text(seg, punctuation, fillers, comma_as_space=comma_as_space)
+        ]
         if not segs:
             segs = before_texts
         segs = enforce_max_chars(segs, max_chars)
         segs = repair_protected_term_boundaries(segs)
+        segs = repair_hanging_value_connectors(segs, max_chars)
         segs = merge_short_segments(segs, min_chars, max_chars)
 
         start_ts, _ = _cue_start_end(window_cues[0])
@@ -797,6 +934,7 @@ def optimize_short_windows(
     max_chars: int,
     punctuation: str,
     fillers: tuple[str, ...],
+    comma_as_space: bool,
     model: str,
     base_url: str,
     api_key: str | None,
@@ -894,11 +1032,16 @@ def optimize_short_windows(
                 if consecutive_llm_failures >= max_consecutive_llm_failures:
                     llm_disabled = True
 
-        segs = [clean_subtitle_text(seg, punctuation, fillers) for seg in segs if clean_subtitle_text(seg, punctuation, fillers)]
+        segs = [
+            clean_subtitle_text(seg, punctuation, fillers, comma_as_space=comma_as_space)
+            for seg in segs
+            if clean_subtitle_text(seg, punctuation, fillers, comma_as_space=comma_as_space)
+        ]
         if not segs:
             segs = before_texts
         segs = enforce_max_chars(segs, max_chars)
         segs = repair_protected_term_boundaries(segs)
+        segs = repair_hanging_value_connectors(segs, max_chars)
         segs = merge_short_segments(segs, min_chars, max_chars)
 
         start_ts, _ = _cue_start_end(window_cues[0])
@@ -929,6 +1072,7 @@ def optimize_overlong_cues(
     max_chars: int,
     punctuation: str,
     fillers: tuple[str, ...],
+    comma_as_space: bool,
     model: str,
     base_url: str,
     api_key: str | None,
@@ -990,12 +1134,12 @@ def optimize_overlong_cues(
                             raise SubtitleOptimizerError("LLM neighbor rewrite output changed, added, or removed subtitle text")
                         if idx > 0 and prev_segs and prev_segs != [prev_text]:
                             neighbor_results[idx - 1] = enforce_max_chars(
-                                [clean_subtitle_text(s, punctuation, fillers) for s in prev_segs],
+                                [clean_subtitle_text(s, punctuation, fillers, comma_as_space=comma_as_space) for s in prev_segs],
                                 max_chars,
                             )
                         if idx + 1 < len(cues) and next_segs and next_segs != [next_text]:
                             neighbor_results[idx + 1] = enforce_max_chars(
-                                [clean_subtitle_text(s, punctuation, fillers) for s in next_segs],
+                                [clean_subtitle_text(s, punctuation, fillers, comma_as_space=comma_as_space) for s in next_segs],
                                 max_chars,
                             )
                     else:
@@ -1034,8 +1178,12 @@ def optimize_overlong_cues(
                                 "remaining": len(overlong_indices) - position,
                             })
 
-            segs = enforce_max_chars([clean_subtitle_text(s, punctuation, fillers) for s in segs], max_chars)
+            segs = enforce_max_chars(
+                [clean_subtitle_text(s, punctuation, fillers, comma_as_space=comma_as_space) for s in segs],
+                max_chars,
+            )
             segs = repair_protected_term_boundaries(segs)
+            segs = repair_hanging_value_connectors(segs, max_chars)
             split_results[idx] = segs
             overlong_changes.append({
                 "cue": cue.index,
@@ -1067,6 +1215,15 @@ def optimize_overlong_cues(
         if idx in overlong_indices and not use_llm:
             before = _cue_text(cue)
             segments = repair_protected_term_boundaries(greedy_split(before, max_chars))
+            segments = [
+                cleaned
+                for cleaned in (
+                    clean_subtitle_text(seg, punctuation, fillers, comma_as_space=comma_as_space)
+                    for seg in segments
+                )
+                if cleaned
+            ] or segments
+            segments = repair_hanging_value_connectors(segments, max_chars)
             start, end = _cue_start_end(cue)
             timings = interpolate_timestamps(start, end, segments)
             for seg, (seg_start, seg_end) in zip(segments, timings):
@@ -1101,6 +1258,7 @@ def repair_asr_boundaries(
     api_key: str | None,
     use_llm: bool = True,
     fillers: tuple[str, ...] = DEFAULT_REMOVE_FILLER_WORDS,
+    comma_as_space: bool = DEFAULT_COMMA_AS_SPACE,
     llm_timeout: int = 45,
     fallback_on_llm_error: bool = True,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
@@ -1113,6 +1271,7 @@ def repair_asr_boundaries(
         max_chars=max_chars,
         punctuation=punctuation,
         fillers=fillers,
+        comma_as_space=comma_as_space,
         model=model,
         base_url=base_url,
         api_key=api_key,
@@ -1143,6 +1302,7 @@ def repair_asr_boundaries(
         "min_chars": min_chars,
         "removed_punctuation": punctuation,
         "removed_fillers": list(fillers),
+        "comma_as_space": comma_as_space,
         "use_llm": use_llm,
         "llm_timeout": llm_timeout,
         "llm_fallback_error_count": len(llm_errors),
@@ -1168,6 +1328,7 @@ def optimize_srt(
     api_key: str | None,
     use_llm: bool = True,
     fillers: tuple[str, ...] = DEFAULT_REMOVE_FILLER_WORDS,
+    comma_as_space: bool = DEFAULT_COMMA_AS_SPACE,
     allow_neighbor_rewrite: bool = False,
     optimize_short: bool = True,
     llm_timeout: int = 45,
@@ -1182,7 +1343,7 @@ def optimize_srt(
     punctuation_changes: list[dict[str, Any]] = []
     for cue in cues:
         before = " ".join(cue.lines)
-        after = clean_subtitle_text(before, punctuation, fillers)
+        after = clean_subtitle_text(before, punctuation, fillers, comma_as_space=comma_as_space)
         cleaned_cues.append(Cue(index=cue.index, timing=cue.timing, lines=after.split("\n") if after else [""]))
         if before != after:
             punctuation_changes.append({"cue": cue.index, "timing": cue.timing, "before": before, "after": after})
@@ -1200,6 +1361,7 @@ def optimize_srt(
             max_chars=max_chars,
             punctuation=punctuation,
             fillers=fillers,
+            comma_as_space=comma_as_space,
             model=model,
             base_url=base_url,
             api_key=api_key,
@@ -1242,6 +1404,7 @@ def optimize_srt(
         max_chars=max_chars,
         punctuation=punctuation,
         fillers=fillers,
+        comma_as_space=comma_as_space,
         model=model,
         base_url=base_url,
         api_key=api_key,
@@ -1256,6 +1419,8 @@ def optimize_srt(
     llm_errors: list[dict[str, Any]] = []
     llm_errors.extend(short_llm_errors)
     llm_errors.extend(overlong_llm_errors)
+
+    expanded, hanging_value_merges = merge_hanging_value_connector_cues(expanded, max_chars=max_chars)
 
     # Step 4: renumber all cues and write output
     for i, cue in enumerate(expanded, start=1):
@@ -1275,6 +1440,7 @@ def optimize_srt(
         "min_chars": min_chars,
         "removed_punctuation": punctuation,
         "removed_fillers": list(fillers),
+        "comma_as_space": comma_as_space,
         "use_llm": use_llm,
         "llm_timeout": llm_timeout,
         "allow_neighbor_rewrite": allow_neighbor_rewrite,
@@ -1283,12 +1449,14 @@ def optimize_srt(
         "cue_count_before": len(cues),
         "cue_count_after": len(expanded),
         "punctuation_changed_cue_count": len(punctuation_changes),
+        "hanging_value_merge_count": len(hanging_value_merges),
         "overlong_detected_count": len(overlong_indices),
         "overlong_changed_cue_count": len(overlong_changes),
         "short_detected_count": short_detected_count,
         "short_window_count": short_window_count,
         "short_changed_window_count": len(short_changes),
         "punctuation_changes": punctuation_changes,
+        "hanging_value_merges": hanging_value_merges,
         "overlong_changes": overlong_changes,
         "short_changes": short_changes,
         "llm_errors": llm_errors,
@@ -1314,6 +1482,19 @@ def parse_args() -> argparse.Namespace:
         "--remove-fillers",
         default=DEFAULT_REMOVE_FILLERS_TEXT,
         help="Comma/space separated filler words to remove. Empty value disables filler cleanup.",
+    )
+    parser.add_argument(
+        "--comma-as-space",
+        dest="comma_as_space",
+        action="store_true",
+        default=DEFAULT_COMMA_AS_SPACE,
+        help="Replace Chinese/English commas with spaces before writing SRT.",
+    )
+    parser.add_argument(
+        "--no-comma-as-space",
+        dest="comma_as_space",
+        action="store_false",
+        help="Do not convert commas to spaces.",
     )
     parser.add_argument("--model", default=os.environ.get("OPENAI_MODEL", "gpt-4.1-mini"))
     parser.add_argument("--base-url", default=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"))
@@ -1342,6 +1523,7 @@ def main() -> int:
         api_key=args.api_key,
         use_llm=not args.no_llm,
         fillers=parse_filler_words(args.remove_fillers),
+        comma_as_space=args.comma_as_space,
         allow_neighbor_rewrite=args.allow_neighbor_rewrite,
         llm_timeout=args.llm_timeout,
     )

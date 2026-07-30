@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from drautocut.integrations.online_asr import OnlineAsrError, OnlineAsrTranscriber
+from caption_core.integrations.online_asr import OnlineAsrError, OnlineAsrTranscriber
 
 
 def test_online_asr_transcriber_loads_external_tool_and_returns_cues(tmp_path: Path) -> None:

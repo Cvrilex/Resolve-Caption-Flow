@@ -1,0 +1,11 @@
+{
+  "model": "gpt-4.1-mini",
+  "base_url": "https://api.openai.com/v1",
+  "api_key": "",
+  "engine": "bcut",
+  "segmented_asr": false,
+  "asr_max_workers": 1,
+  "asr_segment_minutes": 10,
+  "srt_only": false,
+  "render_preset": "ffpg-fast-23"
+}

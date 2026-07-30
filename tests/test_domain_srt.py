@@ -1,4 +1,4 @@
-from drautocut.domain.srt import Cue, parse_srt_text, render_srt
+from caption_core.domain.srt import Cue, parse_srt_text, render_srt
 
 
 def test_parse_and_render_srt_text_normalizes_indices() -> None:

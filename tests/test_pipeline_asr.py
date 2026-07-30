@@ -2,14 +2,14 @@ from pathlib import Path
 
 import pytest
 
-from drautocut.domain.srt import Cue
-from drautocut.pipeline.asr import (
+from caption_core.domain.srt import Cue
+from caption_core.pipeline.asr import (
     FunctionTranscriber,
     SegmentedAsrError,
     build_segment_tasks,
     run_segmented_asr,
 )
-from drautocut.pipeline.segments import plan_media_segments
+from caption_core.pipeline.segments import plan_media_segments
 
 
 def test_run_segmented_asr_merges_offsets_and_emits_progress(tmp_path: Path) -> None:

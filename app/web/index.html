@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>字幕校正自动化</title>
+<title>Resolve Caption Flow</title>
 <style>
   :root {
     --bg: #0b1020;
@@ -92,13 +92,14 @@
     padding: 0 18px; cursor: pointer; font-size: 12px; min-width: 112px;
   }
   .subtab.active { color: var(--text); border-bottom-color: var(--accent-blue); background: rgba(51,103,255,.08); }
-  .workspace {
-    position: relative; flex: 1; min-height: 0; padding: 28px;
+	  .workspace {
+	    position: relative; flex: 1; min-height: 0; padding: 28px;
     background:
       linear-gradient(135deg, rgba(255,255,255,.03) 0 1px, transparent 1px) 0 0/72px 72px,
       radial-gradient(circle at 15% 80%, rgba(51,103,255,.10), transparent 26%);
-    overflow: auto;
-  }
+	    overflow: auto;
+	  }
+	  .workspace.task-create-workspace { padding-top: 8px; padding-bottom: 6px; }
   .module-panel { display: none; max-width: 1180px; margin: 0 auto; }
   .module-panel.active { display: block; }
 
@@ -142,14 +143,71 @@
     color: var(--text); font-size: 14px;
   }
   .form-field textarea { resize: vertical; min-height: 60px; }
-  details.advanced-panel {
+  .cleanup-editor {
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--bg); padding: 7px; display: grid; gap: 7px;
+  }
+	  .cleanup-chip-list {
+	    display: flex; flex-wrap: wrap; gap: 7px; min-height: 48px; max-height: 78px;
+	    align-items: flex-start; overflow: auto;
+	    padding: 9px 6px 6px 4px;
+	  }
+  .cleanup-chip {
+    position: relative; display: inline-flex; align-items: center; justify-content: center;
+    min-width: 32px; min-height: 26px; padding: 5px 13px 5px 10px;
+    border: 1px solid rgba(36,214,200,.34); border-radius: 8px;
+    background: rgba(36,214,200,.10); color: var(--text); font-size: 13px;
+  }
+	  .cleanup-chip-remove {
+	    position: absolute; top: -3px; right: -3px; width: 16px; height: 16px;
+    border: 1px solid rgba(248,113,113,.55); border-radius: 50%;
+    background: #2a1420; color: var(--red); line-height: 13px;
+    font-size: 12px; cursor: pointer; padding: 0;
+  }
+  .cleanup-add-row { display: grid; grid-template-columns: 1fr 32px; gap: 7px; }
+  .cleanup-add-row input { margin: 0; }
+  .cleanup-add-btn {
+    border: 1px solid rgba(36,214,200,.45); border-radius: 8px;
+    background: rgba(36,214,200,.13); color: var(--accent); font-size: 20px;
+    font-weight: 700; cursor: pointer;
+  }
+  .cleanup-add-btn:hover { background: rgba(36,214,200,.20); }
+  .task-cleanup-note { display: none; }
+  .cleanup-field-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-height: 24px;
+    margin-bottom: 4px;
+  }
+  .cleanup-field-head > label {
+    margin-bottom: 0;
+    white-space: nowrap;
+  }
+  .cleanup-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+    color: var(--text-dim);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .cleanup-toggle input { width: auto; margin: 0; }
+  .advanced-panel {
     border: 1px solid var(--border); border-radius: var(--radius);
     padding: 12px; margin-bottom: 16px; background: var(--surface-soft);
   }
-  details.advanced-panel summary {
+  .advanced-panel summary {
     cursor: pointer; color: var(--text); font-size: 13px; font-weight: 600;
   }
-  details.advanced-panel > :not(summary) { margin-top: 12px; }
+  .advanced-panel > :not(summary) { margin-top: 12px; }
+	  .segmented-asr-panel {
+	    display: grid; gap: 9px; border: 1px solid var(--border); border-radius: var(--radius);
+	    padding: 10px; background: rgba(15,52,96,.18);
+	  }
+	  .segmented-asr-title { color: var(--text); font-size: 13px; font-weight: 700; }
   .mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
   .mode-option {
     border: 1px solid var(--border); border-radius: var(--radius);
@@ -168,36 +226,124 @@
   .history-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
   .history-actions .btn { margin-top: 0; }
   .placeholder-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
-  .task-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(260px, 1fr));
-    gap: 14px;
-    align-items: stretch;
+  .path-list { display: grid; gap: 10px; margin-top: 12px; }
+  .path-item {
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: rgba(15,52,96,.18); padding: 12px; min-width: 0;
   }
+  .path-item-head { display: flex; justify-content: space-between; gap: 10px; align-items: center; margin-bottom: 6px; }
+  .path-item-title { font-size: 13px; font-weight: 700; color: var(--text); }
+  .path-item-path {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px; color: var(--accent); word-break: break-all;
+  }
+  .path-item-desc { color: var(--text-dim); font-size: 12px; line-height: 1.45; margin-top: 6px; }
+	  .task-grid {
+	    display: grid;
+	    grid-template-columns: 1fr;
+	    gap: 8px;
+	    align-items: start;
+	  }
   .task-grid .card { margin-bottom: 0; }
-  .task-card { padding: 20px; min-height: 360px; }
-  .task-card .card-head { margin-bottom: 10px; }
-  .task-card h2 { margin-bottom: 10px; }
-  .task-card .drop-zone { padding: 12px 10px; margin-bottom: 8px; min-height: 92px; }
-  .task-card .drop-zone .icon { font-size: 18px; margin-bottom: 6px; }
+	  .task-card {
+	    padding: 10px 14px;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: 170px minmax(0, 1fr);
+    gap: 18px;
+    align-items: start;
+  }
+  .task-card .card-head { margin-bottom: 0; }
+  .task-card h2 { margin-bottom: 4px; }
+  .task-card .view-kicker { font-size: 12px; line-height: 1.4; }
+	  .task-card .drop-zone { padding: 6px 10px; margin-bottom: 0; min-height: 54px; }
+  .task-card .drop-zone .icon { font-size: 15px; margin-bottom: 4px; }
   .task-card .drop-zone .label { font-size: 13px; }
   .task-card details.advanced-panel { margin-bottom: 8px; padding: 10px; }
-  .task-card .mode-grid { grid-template-columns: 1fr; gap: 8px; margin-bottom: 12px; }
+  .task-card .mode-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 0; }
   .task-card .mode-option { padding: 10px; }
   .task-card .form-field { margin-bottom: 10px; }
-  .task-actions-card {
-    grid-column: 1 / -1;
+  .task-files-card { order: 1; }
+  .task-file-controls {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(220px, 260px);
-    gap: 18px;
-    align-items: end;
-    min-height: 124px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
   }
-  .task-actions-card .card-head { margin-bottom: 8px; }
+  .task-file-controls #pdfGuidance { grid-column: 1 / -1; }
+  .task-settings-card { order: 2; }
+	  .task-settings-controls {
+	    display: grid;
+	    grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) minmax(220px, .9fr);
+	    gap: 10px;
+	    align-items: start;
+	  }
+	  .task-settings-controls .segmented-asr-panel { margin: 0; }
+  .task-actions-card {
+    order: 4;
+    grid-template-columns: 170px minmax(220px, .72fr) minmax(360px, 1.28fr);
+    gap: 12px;
+    align-items: start;
+    min-height: 0;
+  }
+  .task-output-options {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+    align-items: start;
+  }
+  .task-actions-card .card-head { margin-bottom: 0; }
+  .task-output-options .card-head { margin-bottom: 0; }
+  .task-actions-card h2 { margin-bottom: 4px; }
+  .task-actions-card .view-kicker { font-size: 11px; line-height: 1.3; }
   .task-actions-card .mode-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     margin-bottom: 0;
   }
+  .task-actions-card .mode-option { padding: 8px; }
+  .task-actions-card .mode-option .name { font-size: 13px; }
+  .task-actions-card .mode-option .desc { margin-top: 2px; font-size: 11px; }
+  .task-action-controls {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    align-items: stretch;
+  }
+	  .task-action-controls .btn {
+	    margin-top: 0;
+	    min-height: 38px;
+	    padding: 8px 12px;
+	    white-space: normal;
+	    line-height: 1.25;
+	  }
+	  .local-asr-hint {
+    grid-column: 1 / -1;
+    margin-top: 2px;
+	    padding: 6px 9px;
+    border: 1px solid rgba(255,255,255,.06);
+    border-radius: 6px;
+    background: rgba(15,52,96,.15);
+    font-size: 11px;
+    line-height: 1.3;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .task-action-controls .error-msg { grid-column: 1 / -1; margin-top: 0; }
+	  .task-cleanup-card {
+	    order: 3;
+	    grid-template-columns: 170px minmax(260px, 1fr) minmax(260px, 1fr) 190px;
+	    gap: 12px;
+	    align-items: start;
+	    padding: 10px 14px;
+	  }
+  .task-cleanup-card .card-head { margin-bottom: 0; }
+  .task-cleanup-card h2 { margin-bottom: 4px; }
+  .task-cleanup-card .view-kicker { font-size: 11px; line-height: 1.35; }
+  .task-cleanup-card .form-field { margin-bottom: 0; }
+	  .task-cleanup-card .asr-settings-row {
+	    align-self: end;
+	    margin-top: 27px;
+	  }
   .pagination {
     display: flex; align-items: center; justify-content: flex-end; gap: 6px;
     margin-top: 14px; flex-wrap: wrap;
@@ -222,7 +368,19 @@
   .compact-table { width: 100%; border-collapse: collapse; font-size: 12px; }
   .compact-table th, .compact-table td { border-bottom: 1px solid rgba(255,255,255,.06); padding: 12px 10px; text-align: left; }
   .compact-table th { color: var(--text-dim); font-weight: 600; }
-  .compact-table button { background: #244a9b; color: #fff; border: 0; border-radius: 4px; padding: 5px 10px; opacity: .55; }
+  .compact-table button { background: #244a9b; color: #fff; border: 0; border-radius: 4px; padding: 5px 10px; cursor: pointer; }
+  .compact-table button:disabled { opacity: .55; cursor: not-allowed; }
+  .compact-table input[type="text"] {
+    width: 100%; min-width: 0; padding: 8px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 4px; color: var(--text);
+    font-size: 12px;
+  }
+  .compact-table input[type="checkbox"] { accent-color: var(--accent); }
+  .knowledge-table th:nth-child(1) { width: 22%; }
+  .knowledge-table th:nth-child(2) { width: 28%; }
+  .knowledge-table th:nth-child(3) { width: 27%; }
+  .knowledge-table th:nth-child(4) { width: 10%; }
+  .knowledge-table th:nth-child(5) { width: 13%; }
   .rules-list { list-style: none; display: grid; gap: 10px; margin-top: 12px; }
   .rules-list li { display: flex; justify-content: space-between; padding: 10px; border: 1px solid rgba(255,255,255,.06); border-radius: 6px; color: var(--text-dim); }
   .rules-list strong { color: var(--text); }
@@ -307,7 +465,7 @@
     border: 1px solid var(--border); border-radius: var(--radius);
     color: var(--text); font-size: 13px;
   }
-  .asr-settings-row { display: flex; gap: 12px; margin-top: 10px; }
+	  .asr-settings-row { display: flex; gap: 10px; margin-top: 8px; }
   .asr-segments {
     margin-top: 12px; border: 1px solid var(--border);
     border-radius: var(--radius); overflow: hidden;
@@ -382,8 +540,14 @@
   .inline-result.ok { color: var(--green); }
   .inline-result.failed { color: var(--red); }
   @media (max-width: 1180px) {
-    .task-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .task-actions-card { grid-column: 1 / -1; grid-template-columns: 1fr; }
+    .task-card,
+    .task-actions-card { grid-template-columns: 150px minmax(0, 1fr); }
+    .task-file-controls,
+    .task-settings-controls,
+    .task-output-options { grid-template-columns: 1fr; }
+    .task-cleanup-card { grid-template-columns: 1fr 1fr; }
+    .task-cleanup-card .card-head,
+    .task-cleanup-card .asr-settings-row { grid-column: 1 / -1; margin-top: 0; }
   }
   @media (max-width: 640px) {
     .app-shell { height: auto; min-height: 100vh; overflow: visible; grid-template-columns: 1fr; }
@@ -394,6 +558,15 @@
     .status-grid { grid-template-columns: 1fr; }
     .engine-select { flex-direction: column; }
     .workflow-nav, .field-grid, .mode-grid, .history-grid, .placeholder-grid, .task-grid { grid-template-columns: 1fr; }
+    .task-card,
+    .task-actions-card { grid-template-columns: 1fr; }
+    .task-file-controls,
+    .task-settings-controls,
+    .task-output-options { grid-template-columns: 1fr; }
+    .task-action-controls { grid-column: auto; grid-template-columns: 1fr; }
+    .task-cleanup-card { grid-template-columns: 1fr; }
+    .task-cleanup-card .card-head,
+    .task-cleanup-card .asr-settings-row { grid-column: auto; }
     .replacement-row { grid-template-columns: 1fr; }
     .resume-item { grid-template-columns: 1fr; }
     .resume-item-action { min-width: 0; }
@@ -404,10 +577,10 @@
 <div class="app-shell">
   <aside class="sidebar">
     <div class="brand">
-      <div class="brand-mark">DC</div>
+      <div class="brand-mark">RCF</div>
       <div>
-        <div class="brand-title">DRautocut</div>
-        <div class="brand-subtitle">老司机字幕助手</div>
+        <div class="brand-title">Resolve Caption Flow</div>
+        <div class="brand-subtitle">达芬奇字幕助手</div>
       </div>
     </div>
     <nav class="side-nav">
@@ -453,6 +626,7 @@
           <div class="mini-actions">
             <button class="btn btn-secondary" id="refreshSystemBtn">刷新状态</button>
             <button class="btn btn-secondary" id="openModelHelpBtn">模型说明</button>
+            <button class="btn btn-secondary" id="exportDiagnosticsBtn" type="button">导出诊断日志</button>
           </div>
           <div class="inline-result" id="systemHelpText"></div>
         </div>
@@ -511,15 +685,18 @@
       <section class="module-panel" data-module="config" data-subtab="paths">
         <div class="placeholder-grid">
           <div class="placeholder-card">
-            <h3>产出文件目录</h3>
-            <p>后续允许用户选择 SRT、报告、渲染视频和缓存文件的保存位置。</p>
-            <div class="form-field"><label>输出目录</label><input type="text" value="mvp_pipeline/output" disabled></div>
-            <div class="form-field"><label>工作缓存目录</label><input type="text" value="mvp_pipeline/work" disabled></div>
+            <h3>产出文件位置</h3>
+            <p>所有本地文件按类型保存。当前版本先展示位置和状态，后续再开放自定义迁移。</p>
+            <div class="path-list" id="outputPathList">
+              <div class="terms-note">正在读取目录状态...</div>
+            </div>
           </div>
           <div class="placeholder-card">
             <h3>知识库目录</h3>
-            <p>知识库目录会从配置中读取；以后支持用户迁移或切换工作空间。</p>
-            <div class="form-field"><label>默认知识库</label><input type="text" value="mvp_pipeline/work/knowledge_base" disabled></div>
+            <p>跨项目知识库和规则库保存在这里；当前任务中的人名、学校名、机构名等专名默认不进入跨项目知识库。</p>
+            <div class="path-list" id="knowledgePathList">
+              <div class="terms-note">正在读取知识库目录...</div>
+            </div>
           </div>
         </div>
       </section>
@@ -528,13 +705,13 @@
         <div class="placeholder-grid">
           <div class="placeholder-card">
             <h3>当前激活知识库</h3>
-            <p>当前版本显示跨课程知识库状态；后续会支持通用领域知识库切换。</p>
-            <div class="metric-row"><span>当前领域</span><strong>医疗</strong></div>
+            <p>当前版本显示跨项目知识库状态；内置医疗术语规则是可选示例，后续会支持通用领域知识库切换。</p>
+            <div class="metric-row"><span>当前示例</span><strong>医疗术语</strong></div>
             <div class="metric-row"><span>启用状态</span><strong>已启用</strong></div>
           </div>
           <div class="placeholder-card">
             <h3>本地知识库</h3>
-            <p>这里会列出本地已有知识库，例如医疗、法律、财经、教育等。</p>
+            <p>这里会列出本地已有知识库，可用于医疗、法律、财经、教育等不同专业领域。</p>
             <button class="btn btn-secondary" type="button" disabled>切换知识库</button>
           </div>
         </div>
@@ -545,14 +722,21 @@
           <div class="placeholder-card">
             <h3>多 PDF 补充知识库</h3>
             <p>支持一次添加多个 PDF，提取可复用术语、缩写、规则和单位写法。</p>
-            <div class="drop-zone muted-drop">
+            <div class="drop-zone" id="knowledgePdfDrop">
               <div class="icon">+</div>
-              <div class="label">添加 PDF 到知识库（占位）</div>
+              <div class="label">拖拽或点击添加 PDF 到知识库</div>
+              <div class="file-name hidden" id="knowledgePdfName"></div>
+              <input type="file" id="knowledgePdfInput" accept=".pdf" multiple>
             </div>
+            <div class="mini-actions">
+              <button class="btn btn-secondary" id="diagnoseKnowledgePdfBtn" type="button" disabled>诊断 PDF</button>
+              <button class="btn btn-primary" id="importKnowledgePdfBtn" type="button" disabled>导入 PDF 到知识库</button>
+            </div>
+            <div class="inline-result" id="knowledgeImportResult"></div>
           </div>
           <div class="placeholder-card">
-            <h3>课程专名处理</h3>
-            <p>人名、学校名、课程编号等默认进入本次任务专名表；是否沉淀到知识库需要显式确认。</p>
+            <h3>任务专名处理</h3>
+            <p>人名、学校名、项目编号等默认进入本次任务专名表；是否沉淀到知识库需要显式确认。</p>
           </div>
         </div>
       </section>
@@ -561,16 +745,16 @@
         <div class="card">
           <div class="card-head">
             <div>
-              <h2>术语分类管理</h2>
-              <div class="view-kicker">后续支持对术语增删改查、分类筛选、批量启停和来源追踪。</div>
+              <h2>术语管理</h2>
+              <div class="view-kicker">查看当前知识库真实条目，可直接修改标准写法、备注和启用状态。</div>
             </div>
+            <button class="btn btn-secondary compact-btn" id="refreshKnowledgeEntriesBtn" type="button">刷新术语</button>
           </div>
-          <table class="compact-table">
-            <thead><tr><th>分类</th><th>示例</th><th>状态</th><th>操作</th></tr></thead>
-            <tbody>
-              <tr><td>疾病/诊断</td><td>高血压急症</td><td>启用</td><td><button disabled>编辑</button></td></tr>
-              <tr><td>药物/术式</td><td>硝普钠</td><td>启用</td><td><button disabled>编辑</button></td></tr>
-              <tr><td>课程专名</td><td>讲者姓名、学校名</td><td>仅本任务</td><td><button disabled>查看</button></td></tr>
+          <div class="inline-result" id="knowledgeEntriesResult">正在读取知识库术语...</div>
+          <table class="compact-table knowledge-table">
+            <thead><tr><th>错误/别名</th><th>标准写法</th><th>备注</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody id="knowledgeTermsBody">
+              <tr><td colspan="5" class="terms-note">正在读取...</td></tr>
             </tbody>
           </table>
         </div>
@@ -596,55 +780,59 @@
 
       <section class="module-panel" data-module="task" data-subtab="create">
         <div class="task-grid" id="uploadCard">
-          <div class="card task-card">
+          <div class="card task-card task-files-card">
             <div class="card-head">
               <div>
                 <h2>输入文件</h2>
                 <div class="view-kicker">视频必填，PDF 可选但推荐。</div>
               </div>
             </div>
-            <div class="drop-zone" id="videoDrop">
-              <div class="icon">V</div>
-              <div class="label">拖拽或点击上传视频</div>
-              <div class="file-name hidden" id="videoName"></div>
-              <input type="file" id="videoInput" accept="video/*">
+            <div class="task-file-controls">
+              <div class="drop-zone" id="videoDrop">
+                <div class="icon">V</div>
+                <div class="label">拖拽或点击上传视频</div>
+                <div class="file-name hidden" id="videoName"></div>
+                <input type="file" id="videoInput" accept="video/*">
+              </div>
+              <div class="drop-zone" id="pdfDrop">
+                <div class="icon">P</div>
+                <div class="label">拖拽或点击上传参考 PDF</div>
+                <div class="file-name hidden" id="pdfName"></div>
+                <input type="file" id="pdfInput" accept=".pdf">
+              </div>
+              <div class="terms-note" id="pdfGuidance">未上传 PDF 时会跳过术语预检，只使用脚本规则和字幕优化。</div>
             </div>
-            <div class="drop-zone" id="pdfDrop">
-              <div class="icon">P</div>
-              <div class="label">拖拽或点击上传课程 PDF</div>
-              <div class="file-name hidden" id="pdfName"></div>
-              <input type="file" id="pdfInput" accept=".pdf">
-            </div>
-            <div class="terms-note" id="pdfGuidance">未上传 PDF 时会跳过课程术语预检，只使用脚本规则和字幕优化。</div>
           </div>
 
-          <div class="card task-card">
+          <div class="card task-card task-settings-card">
             <div class="card-head">
               <div>
                 <h2>识别与导出</h2>
                 <div class="view-kicker">选择 ASR 接口和达芬奇输出预设。</div>
               </div>
             </div>
-            <div class="form-field">
-              <label>ASR 接口</label>
-              <select id="engineSelect"><option value="bcut">必剪 B 接口</option></select>
-              <div class="terms-note" id="asrEngineHint" style="margin-top:6px;">正在读取 ASR 接口状态...</div>
-            </div>
-            <div class="form-field">
-              <label>达芬奇输出预设名</label>
-              <input type="text" id="renderPresetInput" placeholder="ffpg-fast-23" value="ffpg-fast-23">
-            </div>
-            <details class="advanced-panel">
-              <summary>长视频分段 ASR 设置</summary>
-              <label><input type="checkbox" id="segmentedAsrInput"> 长视频分段 ASR</label>
-              <div class="asr-settings-row">
-                <div style="flex:1;"><label style="display:block;margin-bottom:4px;">并发数</label><input type="number" id="asrWorkersInput" min="1" max="3" value="1"></div>
-                <div style="flex:1;"><label style="display:block;margin-bottom:4px;">目标分钟/段</label><input type="number" id="asrSegmentMinutesInput" min="3" max="15" step="1" value="10"></div>
+            <div class="task-settings-controls">
+              <div class="form-field">
+                <label>ASR 接口</label>
+                <select id="engineSelect"><option value="bcut">必剪 B 接口</option></select>
+                <div class="terms-note" id="asrEngineHint" style="margin-top:6px;">正在读取 ASR 接口状态...</div>
               </div>
-            </details>
+              <div class="form-field">
+                <label>达芬奇输出预设名</label>
+                <input type="text" id="renderPresetInput" placeholder="ffpg-fast-23" value="ffpg-fast-23">
+              </div>
+	              <div class="segmented-asr-panel">
+                <div class="segmented-asr-title">长视频分段 ASR 设置</div>
+                <label><input type="checkbox" id="segmentedAsrInput"> 长视频分段 ASR</label>
+                <div class="asr-settings-row">
+                  <div style="flex:1;"><label style="display:block;margin-bottom:4px;">并发数</label><input type="number" id="asrWorkersInput" min="1" max="3" value="1"></div>
+                  <div style="flex:1;"><label style="display:block;margin-bottom:4px;">目标分钟/段</label><input type="number" id="asrSegmentMinutesInput" min="3" max="15" step="1" value="10"></div>
+                </div>
+              </div>
+            </div>
           </div>
 
-          <div class="card task-card">
+          <div class="card task-card task-cleanup-card">
             <div class="card-head">
               <div>
                 <h2>字幕清理</h2>
@@ -652,9 +840,36 @@
               </div>
             </div>
             <div class="form-field">
-              <label>一键移除语气词</label>
-              <input type="text" id="removeFillersInput" value="嗯,呃,啊" placeholder="嗯,呃,啊">
-              <div class="terms-note" style="margin-top:6px;">用逗号、顿号、空格或换行分隔；留空则不移除。</div>
+              <div class="cleanup-field-head">
+                <label>一键移除语气词</label>
+              </div>
+              <div class="cleanup-editor" data-cleanup-editor="fillers">
+                <div class="cleanup-chip-list" id="removeFillersChips"></div>
+                <div class="cleanup-add-row">
+                  <input type="text" id="removeFillerDraftInput" placeholder="例如：那么">
+                  <button class="cleanup-add-btn" id="addFillerChipBtn" type="button" title="添加语气词">+</button>
+                </div>
+              </div>
+              <textarea class="hidden" id="removeFillersInput">嗯
+呃
+啊
+呢</textarea>
+              <div class="terms-note task-cleanup-note" style="margin-top:6px;">每个标签都会被删除；留空则不移除语气词。</div>
+            </div>
+            <div class="form-field">
+              <div class="cleanup-field-head">
+                <label>一键移除标点</label>
+                <label class="cleanup-toggle"><input type="checkbox" id="commaAsSpaceInput" checked> 逗号替换为空格</label>
+              </div>
+              <div class="cleanup-editor" data-cleanup-editor="punctuation">
+                <div class="cleanup-chip-list" id="removePunctuationChips"></div>
+                <div class="cleanup-add-row">
+                  <input type="text" id="removePunctuationDraftInput" placeholder="例如：。">
+                  <button class="cleanup-add-btn" id="addPunctuationChipBtn" type="button" title="添加标点">+</button>
+                </div>
+              </div>
+              <input type="hidden" id="removePunctuationInput" value="。">
+              <div class="terms-note task-cleanup-note" style="margin-top:6px;">逗号由上方复选框单独处理；这里的每个标点标签会被直接删除。</div>
             </div>
             <div class="asr-settings-row">
               <div style="flex:1;"><label style="display:block;margin-bottom:4px;">最短字数</label><input type="number" id="subtitleMinCharsInput" min="1" max="20" step="1" value="5"></div>
@@ -663,21 +878,23 @@
           </div>
 
           <div class="card task-card task-actions-card">
-            <div>
-              <div class="card-head">
-                <div>
-                  <h2>输出方式</h2>
-                  <div class="view-kicker">先生成字幕，或直接走到达芬奇渲染。</div>
-                </div>
+            <div class="card-head">
+              <div>
+                <h2>输出方式</h2>
+                <div class="view-kicker">选择生成字幕或直接输出成片。</div>
               </div>
+            </div>
+            <div class="task-output-options">
               <div class="mode-grid">
                 <div class="mode-option selected" data-srt-only="1"><div class="name">只生成 SRT</div><div class="desc">先检查字幕质量。</div></div>
                 <div class="mode-option" data-srt-only="0"><div class="name">SRT + 成片</div><div class="desc">需要 Resolve 可用。</div></div>
               </div>
               <input type="checkbox" id="srtOnlyInput" checked class="hidden">
             </div>
-            <div>
-              <button class="btn btn-primary" id="startBtn" disabled>开始处理</button>
+            <div class="task-action-controls">
+              <button class="btn btn-primary" id="startBtn" disabled>从在线 ASR 开始</button>
+              <button class="btn btn-secondary" id="localAsrStartBtn" type="button" disabled>检测本地 ASR 结果并继续</button>
+              <div class="terms-note local-asr-hint" id="localAsrHint">正在检测本地项目文件夹里的初版 ASR 字幕...</div>
               <div class="error-msg hidden" id="errorMsg"></div>
             </div>
           </div>
@@ -697,11 +914,11 @@
           </div>
           <div class="drop-zone" id="pdfDrop">
             <div class="icon">P</div>
-            <div class="label">拖拽或点击上传课程 PDF（强推荐，可跳过）</div>
+            <div class="label">拖拽或点击上传参考 PDF（强推荐，可跳过）</div>
             <div class="file-name hidden" id="pdfName"></div>
             <input type="file" id="pdfInput" accept=".pdf">
           </div>
-          <div class="terms-note" id="pdfGuidance" style="margin-bottom:16px;">未上传 PDF 时会跳过课程术语预检，只使用脚本规则和字幕优化。</div>
+          <div class="terms-note" id="pdfGuidance" style="margin-bottom:16px;">未上传 PDF 时会跳过术语预检，只使用脚本规则和字幕优化。</div>
           <div class="field-grid">
             <div class="form-field">
               <label>ASR 接口</label>
@@ -713,20 +930,47 @@
               <input type="text" id="renderPresetInput" placeholder="ffpg-fast-23" value="ffpg-fast-23">
             </div>
           </div>
-          <details class="advanced-panel">
-            <summary>长视频分段 ASR 设置</summary>
+	          <div class="segmented-asr-panel">
+            <div class="segmented-asr-title">长视频分段 ASR 设置</div>
             <label><input type="checkbox" id="segmentedAsrInput"> 长视频分段 ASR</label>
             <div class="asr-settings-row">
               <div style="flex:1;"><label style="display:block;margin-bottom:4px;">并发数</label><input type="number" id="asrWorkersInput" min="1" max="3" value="1"></div>
               <div style="flex:1;"><label style="display:block;margin-bottom:4px;">目标分钟/段</label><input type="number" id="asrSegmentMinutesInput" min="3" max="15" step="1" value="10"></div>
             </div>
-          </details>
-          <details class="advanced-panel" open>
-            <summary>字幕清理设置</summary>
-            <div class="form-field">
-              <label>一键移除语气词</label>
-              <input type="text" id="removeFillersInput" value="嗯,呃,啊" placeholder="嗯,呃,啊">
-              <div class="terms-note" style="margin-top:6px;">按逗号、中文逗号、顿号、空格或换行分隔；留空则不移除语气词。</div>
+          </div>
+	          <details class="advanced-panel" open>
+	            <summary>字幕清理设置</summary>
+	            <div class="form-field">
+	              <div class="cleanup-field-head">
+	                <label>一键移除语气词</label>
+	              </div>
+	              <div class="cleanup-editor" data-cleanup-editor="fillers">
+                <div class="cleanup-chip-list" id="removeFillersChips"></div>
+                <div class="cleanup-add-row">
+                  <input type="text" id="removeFillerDraftInput" placeholder="例如：那么">
+                  <button class="cleanup-add-btn" id="addFillerChipBtn" type="button" title="添加语气词">+</button>
+                </div>
+              </div>
+              <textarea class="hidden" id="removeFillersInput">嗯
+呃
+啊
+呢</textarea>
+              <div class="terms-note" style="margin-top:6px;">每个标签都会被删除；留空则不移除语气词。</div>
+	            </div>
+	            <div class="form-field">
+	              <div class="cleanup-field-head">
+	                <label>一键移除标点</label>
+	                <label class="cleanup-toggle"><input type="checkbox" id="commaAsSpaceInput" checked> 逗号替换为空格</label>
+	              </div>
+	              <div class="cleanup-editor" data-cleanup-editor="punctuation">
+                <div class="cleanup-chip-list" id="removePunctuationChips"></div>
+                <div class="cleanup-add-row">
+                  <input type="text" id="removePunctuationDraftInput" placeholder="例如：。">
+                  <button class="cleanup-add-btn" id="addPunctuationChipBtn" type="button" title="添加标点">+</button>
+                </div>
+              </div>
+              <input type="hidden" id="removePunctuationInput" value="。">
+              <div class="terms-note" style="margin-top:6px;">逗号由上方复选框单独处理；这里的每个标点标签会被直接删除。</div>
             </div>
             <div class="asr-settings-row">
               <div style="flex:1;"><label style="display:block;margin-bottom:4px;">单条字幕最短字数</label><input type="number" id="subtitleMinCharsInput" min="1" max="20" step="1" value="5"></div>
@@ -763,8 +1007,8 @@
         <div class="card hidden" id="termReviewCard">
           <div class="card-head">
             <div>
-              <h2>课程术语确认</h2>
-              <div class="view-kicker">确认版术语表会用于本次字幕校正；课程专名默认只服务当前任务。</div>
+              <h2>术语确认</h2>
+              <div class="view-kicker">确认版术语表会用于本次字幕校正；任务专名默认只服务当前任务。</div>
             </div>
           </div>
           <div id="termReviewMeta" class="terms-note" style="margin-bottom:12px;"></div>
@@ -854,6 +1098,7 @@
 <script>
 const STATE = {
   video: null,
+  videoPath: '',
   pdf: null,
   engine: 'bcut',
   runId: null,
@@ -867,17 +1112,35 @@ const STATE = {
   subtab: 'overview',
   selectedRevisionSrt: '',
   selectedRevisionVideo: '',
+  knowledgePdfs: [],
+  knowledgeEntries: [],
+  cleanupFillers: [],
+  cleanupPunctuation: [],
+  localInitialAsr: null,
   finalSrts: [],
   finalSrtPage: 1,
   finalSrtPageSize: 3,
 };
+
+function currentVideoName() {
+  const path = (STATE.videoPath || '').trim();
+  if (path) {
+    const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
+    return normalized.split('/').pop() || path;
+  }
+  return STATE.video?.name || '';
+}
+
+function hasVideoInput() {
+  return Boolean((STATE.videoPath || '').trim() || STATE.video);
+}
 const STEPS_ORDER = ['pipeline', 'probe_video', 'term_map', 'term_review', 'extract_audio', 'asr_prepare', 'asr', 'srt',
                      'asr_boundary_repair', 'subtitle_optimize', 'term_correct', 'llm_term_review',
                      'resolve_import_video', 'resolve_import_srt',
                      'resolve_render'];
 const STEP_LABELS = {
   pipeline: '流水线', probe_video: '视频探测', extract_audio: '提取音频',
-  asr_prepare: 'ASR分段准备', asr: 'ASR语音识别', term_map: 'PDF术语提取', term_review: '课程术语确认',
+  asr_prepare: 'ASR分段准备', asr: 'ASR语音识别', term_map: 'PDF术语提取', term_review: '术语确认',
   asr_boundary_repair: 'ASR切点修复',
   term_correct: '脚本术语校正', llm_term_review: 'LLM术语审校/断句建议',
   subtitle_optimize: '字幕切分优化', resolve_import_video: '导入视频至达芬奇',
@@ -957,6 +1220,34 @@ const VIEW_ROUTES = {
   review: ['task', 'terms'],
   history: ['history', 'completed'],
 };
+const VIEW_STORAGE_KEY = 'caption_core.activeView';
+let CONFIG_SAVE_TIMER = null;
+
+function validModuleSubtab(module, subtab) {
+  const config = APP_MODULES[module];
+  if (!config) return ['env', 'overview'];
+  const validSubtab = config.tabs.some(tab => tab.id === subtab) ? subtab : config.tabs[0].id;
+  return [module, validSubtab];
+}
+
+function saveActiveView(module, subtab) {
+  try {
+    localStorage.setItem(VIEW_STORAGE_KEY, JSON.stringify({ module, subtab }));
+  } catch (_e) {
+    // View memory is a convenience only; ignore storage errors.
+  }
+}
+
+function restoreActiveView() {
+  try {
+    const raw = localStorage.getItem(VIEW_STORAGE_KEY);
+    if (!raw) return ['env', 'overview'];
+    const parsed = JSON.parse(raw);
+    return validModuleSubtab(String(parsed.module || 'env'), String(parsed.subtab || 'overview'));
+  } catch (_e) {
+    return ['env', 'overview'];
+  }
+}
 
 function renderSubtabs(module, activeSubtab) {
   const bar = document.getElementById('subtabBar');
@@ -966,7 +1257,7 @@ function renderSubtabs(module, activeSubtab) {
   ).join('');
 }
 
-function setModule(module, subtab) {
+function setModule(module, subtab, options = {}) {
   const config = APP_MODULES[module] || APP_MODULES.env;
   const targetSubtab = subtab || config.tabs[0].id;
   STATE.module = module;
@@ -976,12 +1267,22 @@ function setModule(module, subtab) {
   document.querySelectorAll('.side-step').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.module === module);
   });
-  renderSubtabs(module, targetSubtab);
-  document.querySelectorAll('.module-panel').forEach(panel => {
+	  renderSubtabs(module, targetSubtab);
+	  document.querySelector('.workspace')?.classList.toggle(
+	    'task-create-workspace',
+	    module === 'task' && targetSubtab === 'create'
+	  );
+	  document.querySelectorAll('.module-panel').forEach(panel => {
     panel.classList.toggle('active', panel.dataset.module === module && panel.dataset.subtab === targetSubtab);
   });
   if (module === 'history') {
     loadFinalSrts();
+  }
+  if (module === 'knowledge' && targetSubtab === 'manage') {
+    loadKnowledgeEntries();
+  }
+  if (!options.skipSave) {
+    saveActiveView(module, targetSubtab);
   }
 }
 
@@ -1008,6 +1309,208 @@ function showHistoryRecovery() {
   showView('history');
 }
 
+function uniqueList(items) {
+  const seen = new Set();
+  const result = [];
+  for (const item of items) {
+    const value = String(item || '').trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    result.push(value);
+  }
+  return result;
+}
+
+function parseCleanupWords(value) {
+  return uniqueList(String(value || '').split(/[,，、\s]+/));
+}
+
+function parseCleanupPunctuation(value) {
+  return uniqueList([...String(value || '')].filter(char => char.trim() && char !== '，' && char !== ','));
+}
+
+function cleanupStateFor(kind) {
+  return kind === 'punctuation' ? STATE.cleanupPunctuation : STATE.cleanupFillers;
+}
+
+function setCleanupState(kind, items) {
+  if (kind === 'punctuation') {
+    STATE.cleanupPunctuation = uniqueList(items);
+  } else {
+    STATE.cleanupFillers = uniqueList(items);
+  }
+  syncCleanupInputs();
+  renderCleanupChips(kind);
+}
+
+function syncCleanupInputs() {
+  const fillersInput = document.getElementById('removeFillersInput');
+  const punctuationInput = document.getElementById('removePunctuationInput');
+  if (fillersInput) fillersInput.value = STATE.cleanupFillers.join('\n');
+  if (punctuationInput) punctuationInput.value = STATE.cleanupPunctuation.join('');
+}
+
+function renderCleanupChips(kind) {
+  const list = document.getElementById(kind === 'punctuation' ? 'removePunctuationChips' : 'removeFillersChips');
+  if (!list) return;
+  const items = cleanupStateFor(kind);
+  if (!items.length) {
+    list.innerHTML = '<span class="terms-note">未设置清理项</span>';
+    return;
+  }
+  list.innerHTML = items.map((item, index) => `
+    <span class="cleanup-chip" data-kind="${kind}" data-index="${index}">
+      ${escapeHtml(item)}
+      <button class="cleanup-chip-remove" type="button" title="删除">-</button>
+    </span>
+  `).join('');
+}
+
+function addCleanupDraft(kind) {
+  const input = document.getElementById(kind === 'punctuation' ? 'removePunctuationDraftInput' : 'removeFillerDraftInput');
+  if (!input) return;
+  const additions = kind === 'punctuation' ? parseCleanupPunctuation(input.value) : parseCleanupWords(input.value);
+  if (!additions.length) return;
+  setCleanupState(kind, [...cleanupStateFor(kind), ...additions]);
+  input.value = '';
+}
+
+function initializeCleanupEditors() {
+  const fillersInput = document.getElementById('removeFillersInput');
+  const punctuationInput = document.getElementById('removePunctuationInput');
+  STATE.cleanupFillers = parseCleanupWords(fillersInput?.value || '嗯\n呃\n啊\n呢');
+  STATE.cleanupPunctuation = parseCleanupPunctuation(punctuationInput?.value || '。');
+  renderCleanupChips('fillers');
+  renderCleanupChips('punctuation');
+  syncCleanupInputs();
+}
+
+function setKnowledgePdfFiles(files) {
+  STATE.knowledgePdfs = [...files].filter(file => file && file.name.toLowerCase().endsWith('.pdf'));
+  const nameEl = document.getElementById('knowledgePdfName');
+  const button = document.getElementById('importKnowledgePdfBtn');
+  const diagnoseButton = document.getElementById('diagnoseKnowledgePdfBtn');
+  if (!STATE.knowledgePdfs.length) {
+    nameEl.textContent = '';
+    nameEl.classList.add('hidden');
+    button.disabled = true;
+    diagnoseButton.disabled = true;
+    return;
+  }
+  nameEl.textContent = `已选择 ${STATE.knowledgePdfs.length} 个 PDF：` + STATE.knowledgePdfs.map(file => file.name).join('、');
+  nameEl.classList.remove('hidden');
+  button.disabled = false;
+  diagnoseButton.disabled = false;
+}
+
+{
+  const zone = document.getElementById('knowledgePdfDrop');
+  const input = document.getElementById('knowledgePdfInput');
+  zone.addEventListener('click', () => input.click());
+  zone.addEventListener('dragover', event => { event.preventDefault(); zone.classList.add('dragover'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+  zone.addEventListener('drop', event => {
+    event.preventDefault();
+    zone.classList.remove('dragover');
+    setKnowledgePdfFiles(event.dataTransfer.files || []);
+  });
+  input.addEventListener('change', () => setKnowledgePdfFiles(input.files || []));
+}
+
+document.getElementById('diagnoseKnowledgePdfBtn').addEventListener('click', async () => {
+  const button = document.getElementById('diagnoseKnowledgePdfBtn');
+  const result = document.getElementById('knowledgeImportResult');
+  const file = STATE.knowledgePdfs[0];
+  if (!file) {
+    result.className = 'inline-result failed';
+    result.textContent = '请先选择 PDF 文件。';
+    return;
+  }
+  button.disabled = true;
+  button.textContent = '诊断中...';
+  result.className = 'inline-result';
+  result.textContent = `正在诊断 ${file.name} 的文字层...`;
+  try {
+    const form = new FormData();
+    form.append('file', file);
+    const resp = await fetch('/api/pdf/diagnose', { method: 'POST', body: form });
+    const data = await readJsonResponse(resp);
+    if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+    if (data.error) throw new Error(data.error);
+    const diagnostic = data.diagnostic || {};
+    const methods = (diagnostic.methods || []).map(method =>
+      `${method.name}:${method.ok ? method.char_count + '字' : '失败'}`
+    ).join('，');
+    const preview = diagnostic.preview ? ` 预览：${String(diagnostic.preview).slice(0, 120)}` : '';
+    result.className = diagnostic.status === 'ok' ? 'inline-result ok' : 'inline-result failed';
+    result.textContent = `PDF诊断：${diagnostic.message || diagnostic.status || '未知状态'}${methods ? ' 方法：' + methods : ''}${preview}`;
+  } catch (e) {
+    result.className = 'inline-result failed';
+    result.textContent = 'PDF诊断失败：' + e.message;
+  } finally {
+    button.disabled = !STATE.knowledgePdfs.length;
+    button.textContent = '诊断 PDF';
+  }
+});
+
+function formatKnowledgeEntryMeta(entry) {
+  const parts = [];
+  if (entry.confidence) parts.push(entry.confidence);
+  if (entry.updated_at) parts.push('更新 ' + entry.updated_at.replace('T', ' '));
+  if (entry.occurrence_count) parts.push('出现 ' + entry.occurrence_count + ' 次');
+  return parts.join(' · ');
+}
+
+function renderKnowledgeEntries() {
+  const body = document.getElementById('knowledgeTermsBody');
+  const result = document.getElementById('knowledgeEntriesResult');
+  const entries = STATE.knowledgeEntries || [];
+  if (!entries.length) {
+    body.innerHTML = '<tr><td colspan="5" class="terms-note">当前知识库还没有可展示的术语。可以先从“PDF 导入”补充，或后续在这里手动新增。</td></tr>';
+    return;
+  }
+  body.innerHTML = entries.map(entry => {
+    const aliases = (entry.aliases || []).join('，');
+    return `
+      <tr data-index="${entry.index}">
+        <td>
+          <input type="text" class="knowledge-wrong" value="${escapeHtml(entry.wrong)}">
+          <div class="terms-note">${escapeHtml(aliases ? '别名：' + aliases : formatKnowledgeEntryMeta(entry))}</div>
+          ${aliases ? `<div class="terms-note">${escapeHtml(formatKnowledgeEntryMeta(entry))}</div>` : ''}
+        </td>
+        <td><input type="text" class="knowledge-correct" value="${escapeHtml(entry.correct)}"></td>
+        <td><input type="text" class="knowledge-note" value="${escapeHtml(entry.note || entry.evidence || '')}"></td>
+        <td><label class="terms-note"><input type="checkbox" class="knowledge-enabled" ${entry.enabled ? 'checked' : ''}> 启用</label></td>
+        <td><button type="button" class="knowledge-save-btn">保存</button></td>
+      </tr>
+    `;
+  }).join('');
+  result.className = 'inline-result ok';
+  result.textContent = `已读取 ${entries.length} 条术语。`;
+}
+
+async function loadKnowledgeEntries() {
+  const body = document.getElementById('knowledgeTermsBody');
+  const result = document.getElementById('knowledgeEntriesResult');
+  if (!body || !result) return;
+  result.className = 'inline-result';
+  result.textContent = '正在读取知识库术语...';
+  body.innerHTML = '<tr><td colspan="5" class="terms-note">正在读取...</td></tr>';
+  try {
+    const resp = await fetch('/api/knowledge/entries');
+    const data = await readJsonResponse(resp);
+    if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+    if (data.error) throw new Error(data.error);
+    STATE.knowledgeEntries = data.entries || [];
+    renderKnowledgeEntries();
+  } catch (e) {
+    STATE.knowledgeEntries = [];
+    result.className = 'inline-result failed';
+    result.textContent = '读取失败：' + e.message;
+    body.innerHTML = '<tr><td colspan="5" class="terms-note">知识库读取失败，请检查后端日志。</td></tr>';
+  }
+}
+
 // Drag & drop
 ['videoDrop','pdfDrop'].forEach(id => {
   const zone = document.getElementById(id);
@@ -1032,8 +1535,15 @@ function setFile(key, file, nameEl) {
   STATE[key] = file;
   nameEl.textContent = '✅ ' + file.name;
   nameEl.classList.remove('hidden');
+  if (key === 'video') {
+    STATE.videoPath = file.path || '';
+  }
   if (key === 'pdf') {
-    document.getElementById('pdfGuidance').textContent = '已选择课程 PDF：开始后会先提取课程术语表，并等待你确认后再进入 ASR。';
+    document.getElementById('pdfGuidance').textContent = '已选择参考 PDF：开始后会先提取术语表，并等待你确认后再进入 ASR。';
+  }
+  if (key === 'video') {
+    STATE.localInitialAsr = null;
+    loadLocalInitialAsr();
   }
   checkReady();
 }
@@ -1053,14 +1563,16 @@ document.querySelectorAll('.mode-option').forEach(opt => {
 });
 
 ['modelInput', 'baseUrlInput', 'apiKeyInput'].forEach(id => {
-  document.getElementById(id).addEventListener('input', () => {
-    STATE.llmTestOk = false;
-    const result = document.getElementById('llmTestResult');
-    result.className = 'inline-result';
-    result.textContent = '模型信息已变化，请重新测试连接。';
-    checkReady();
-  });
-});
+	  document.getElementById(id).addEventListener('input', () => {
+	    STATE.llmTestOk = false;
+	    const result = document.getElementById('llmTestResult');
+	    result.className = 'inline-result';
+	    result.textContent = '模型信息已变化；可先测试连接，也可以开始任务时由后端自动预检。';
+	    scheduleConfigSave();
+	    renderSystemStatusGrid(STATE.systemStatus || {});
+	    checkReady();
+	  });
+	});
 
 document.querySelectorAll('.side-step').forEach(button => {
   button.addEventListener('click', () => {
@@ -1082,10 +1594,145 @@ document.getElementById('subtabBar').addEventListener('click', event => {
 });
 
 document.getElementById('refreshSystemTopBtn').addEventListener('click', loadSystemStatus);
+document.getElementById('refreshKnowledgeEntriesBtn').addEventListener('click', loadKnowledgeEntries);
+document.getElementById('addFillerChipBtn').addEventListener('click', () => addCleanupDraft('fillers'));
+document.getElementById('addPunctuationChipBtn').addEventListener('click', () => addCleanupDraft('punctuation'));
+
+['removeFillerDraftInput', 'removePunctuationDraftInput'].forEach(id => {
+  document.getElementById(id).addEventListener('keydown', event => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    addCleanupDraft(id === 'removePunctuationDraftInput' ? 'punctuation' : 'fillers');
+  });
+});
+
+['removeFillersChips', 'removePunctuationChips'].forEach(id => {
+  document.getElementById(id).addEventListener('click', event => {
+    const button = event.target.closest('.cleanup-chip-remove');
+    if (!button) return;
+    const chip = button.closest('.cleanup-chip');
+    if (!chip) return;
+    const kind = chip.dataset.kind || 'fillers';
+    const index = Number(chip.dataset.index);
+    const next = cleanupStateFor(kind).filter((_item, itemIndex) => itemIndex !== index);
+    setCleanupState(kind, next);
+  });
+});
+
+document.getElementById('knowledgeTermsBody').addEventListener('click', async event => {
+  const button = event.target.closest('.knowledge-save-btn');
+  if (!button) return;
+  const row = button.closest('tr[data-index]');
+  if (!row) return;
+  const result = document.getElementById('knowledgeEntriesResult');
+  const entry = (STATE.knowledgeEntries || []).find(item => String(item.index) === String(row.dataset.index)) || {};
+  button.disabled = true;
+  button.textContent = '保存中';
+  result.className = 'inline-result';
+  result.textContent = '正在保存术语...';
+  try {
+    const resp = await fetch('/api/knowledge/entries/' + row.dataset.index, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        wrong: row.querySelector('.knowledge-wrong').value.trim(),
+        correct: row.querySelector('.knowledge-correct').value.trim(),
+        note: row.querySelector('.knowledge-note').value.trim(),
+        enabled: row.querySelector('.knowledge-enabled').checked,
+        aliases: entry.aliases || [],
+        patterns: entry.patterns || [],
+      }),
+    });
+    const data = await readJsonResponse(resp);
+    if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+    if (data.error) throw new Error(data.error);
+    result.className = 'inline-result ok';
+    result.textContent = '术语已保存。';
+    await loadKnowledgeEntries();
+    await loadSystemStatus();
+  } catch (e) {
+    result.className = 'inline-result failed';
+    result.textContent = '保存失败：' + e.message;
+  } finally {
+    button.disabled = false;
+    button.textContent = '保存';
+  }
+});
+
+document.getElementById('importKnowledgePdfBtn').addEventListener('click', async () => {
+  const button = document.getElementById('importKnowledgePdfBtn');
+  const result = document.getElementById('knowledgeImportResult');
+  if (!STATE.knowledgePdfs.length) {
+    result.className = 'inline-result failed';
+    result.textContent = '请先选择 PDF 文件。';
+    return;
+  }
+  button.disabled = true;
+  button.textContent = '导入中...';
+  result.className = 'inline-result';
+  result.textContent = '正在提取 PDF 术语并写入知识库...';
+  try {
+    const form = new FormData();
+    STATE.knowledgePdfs.forEach(file => form.append('files', file));
+    const payload = llmPayload();
+    form.append('model', payload.model);
+    form.append('base_url', payload.base_url);
+    form.append('api_key', payload.api_key);
+    form.append('system_prompt', payload.system_prompt || '');
+    const resp = await fetch('/api/knowledge/import-pdf', { method: 'POST', body: form });
+    const data = await readJsonResponse(resp);
+    if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+    if (data.error) throw new Error(data.error);
+    const imported = data.imported || [];
+    const failedItems = imported.filter(item => item.status === 'failed');
+    const skippedItems = imported.filter(item => item.status === 'skipped');
+    const added = Number(data.added_count || 0);
+    const updated = Number(data.updated_count || 0);
+    const skipped = Number(data.skipped_count || 0) + skippedItems.length;
+    const failureText = failedItems.map(item => `${item.file || 'PDF'}：${item.error || '未知错误'}`).join('；');
+    const skippedText = skippedItems.map(item => `${item.file || 'PDF'}：${item.error || '未提取到可入库术语'}`).join('；');
+    if (failedItems.length && added + updated === 0) {
+      result.className = 'inline-result failed';
+      result.textContent = `导入失败：新增 ${added}，更新 ${updated}，跳过 ${skipped}，失败 ${failedItems.length}。${failureText}`;
+    } else if (failedItems.length) {
+      result.className = 'inline-result failed';
+      result.textContent = `部分导入：新增 ${added}，更新 ${updated}，跳过 ${skipped}，失败 ${failedItems.length}。${failureText}`;
+    } else if (added + updated === 0 && skippedItems.length) {
+      result.className = 'inline-result failed';
+      result.textContent = `未导入术语：新增 ${added}，更新 ${updated}，跳过 ${skipped}。${skippedText}`;
+    } else {
+      result.className = 'inline-result ok';
+      result.textContent = `导入成功：新增 ${added}，更新 ${updated}，跳过 ${skipped}。`;
+    }
+    await loadKnowledgeEntries();
+    await loadSystemStatus();
+  } catch (e) {
+    result.className = 'inline-result failed';
+    result.textContent = '导入失败：' + e.message;
+  } finally {
+    button.disabled = !STATE.knowledgePdfs.length;
+    button.textContent = '导入 PDF 到知识库';
+  }
+});
+
+function isLocalLlmUrl(baseUrl) {
+  return /^(https?:\/\/)?(127\.0\.0\.1|localhost)(:|\/|$)/i.test(String(baseUrl || '').trim());
+}
+
+function hasUsableLlmConfig() {
+  const model = document.getElementById('modelInput').value.trim();
+  const baseUrl = document.getElementById('baseUrlInput').value.trim();
+  const apiKey = document.getElementById('apiKeyInput').value.trim();
+  const savedHasKey = STATE.systemStatus?.llm?.has_api_key === true;
+  return Boolean(model && baseUrl && (apiKey || savedHasKey || isLocalLlmUrl(baseUrl)));
+}
 
 function checkReady() {
   const engineReady = STATE.systemStatus?.asr?.[STATE.engine]?.available === true;
-  document.getElementById('startBtn').disabled = !STATE.video || !engineReady || !STATE.llmTestOk;
+  const llmReady = hasUsableLlmConfig();
+  document.getElementById('startBtn').disabled = !hasVideoInput() || !engineReady || !llmReady;
+  const localAsrStartBtn = document.getElementById('localAsrStartBtn');
+  if (localAsrStartBtn) localAsrStartBtn.disabled = !hasVideoInput() || !llmReady;
 }
 
 function statusLabel(status) {
@@ -1107,9 +1754,9 @@ function statusLabel(status) {
   return labels[status] || status || '未知';
 }
 
-function renderStatusItem(title, status, message, extra = '') {
-  const safeStatus = escapeHtml(status || 'unknown');
-  return `
+	function renderStatusItem(title, status, message, extra = '') {
+	  const safeStatus = escapeHtml(status || 'unknown');
+	  return `
     <div class="status-item">
       <div class="status-item-title">
         <span>${escapeHtml(title)}</span>
@@ -1117,7 +1764,120 @@ function renderStatusItem(title, status, message, extra = '') {
       </div>
       <div class="status-item-message">${escapeHtml(message || '')}${extra}</div>
     </div>
+	  `;
+	}
+
+	function currentLlmStatus(serverLlm = {}) {
+	  const model = document.getElementById('modelInput')?.value.trim() || serverLlm.model || '';
+	  const baseUrl = document.getElementById('baseUrlInput')?.value.trim() || serverLlm.base_url || '';
+	  const apiKey = document.getElementById('apiKeyInput')?.value.trim() || '';
+	  const hasKey = Boolean(apiKey || serverLlm.has_api_key || isLocalLlmUrl(baseUrl));
+	  const configured = Boolean(model && baseUrl && hasKey);
+	  let message = '';
+	  if (!model || !baseUrl) {
+	    message = '请填写模型名和 API 地址';
+	  } else if (!hasKey) {
+	    message = '请填写 API Key，或使用本地模型服务地址';
+	  } else if (apiKey && !serverLlm.has_saved_api_key && !isLocalLlmUrl(baseUrl)) {
+	    message = '当前页面已填写 API Key；将自动保存到本机配置';
+	  } else {
+	    message = serverLlm.message || '已填写基础配置；可先测试连接，也可开始任务时自动预检';
+	  }
+	  return {
+	    ...serverLlm,
+	    status: configured ? 'configured' : 'not_configured',
+	    model,
+	    base_url: baseUrl,
+	    has_api_key: hasKey,
+	    message,
+	  };
+	}
+
+	function renderSystemStatusGrid(data = {}) {
+	  const grid = document.getElementById('systemStatusGrid');
+	  if (!grid || !data.service) return;
+	  const llm = currentLlmStatus(data.llm || {});
+	  const asrItems = Object.values(data.asr || {}).map(item =>
+	    renderStatusItem(item.label || item.id || 'ASR 接口', item.status, item.message)
+	  );
+	  grid.innerHTML = [
+	    renderStatusItem('Web 后端', data.service?.status, data.service?.message),
+	    renderStatusItem('当前任务', data.job?.status, data.job?.message || '空闲或等待用户操作'),
+	    renderStatusItem('FFmpeg', data.dependencies?.ffmpeg?.status, data.dependencies?.ffmpeg?.message),
+	    renderStatusItem('FFprobe', data.dependencies?.ffprobe?.status, data.dependencies?.ffprobe?.message),
+	    renderStatusItem('DaVinci Resolve', data.dependencies?.resolve?.status, data.dependencies?.resolve?.message),
+	    renderStatusItem('LLM 配置', llm.status, `${llm.message || ''}${llm.base_url ? '：' + llm.base_url : ''}`),
+	    renderStatusItem('当前知识库', data.knowledge?.status, `${data.knowledge?.message || ''}${typeof data.knowledge?.entry_count === 'number' ? ' · 条目 ' + data.knowledge.entry_count : ''}`),
+	    ...asrItems,
+	    renderStatusItem('工作目录', data.storage?.work?.status, data.storage?.work?.message),
+	  ].join('');
+	}
+
+function relativeProjectPath(path, fallback) {
+  const text = String(path || '');
+  if (!text) return fallback;
+  const marker = '/ResolveCaptionFlow/';
+  const index = text.indexOf(marker);
+  if (index >= 0) return text.slice(index + marker.length);
+  if (text.endsWith('/ResolveCaptionFlow')) return '.';
+  return fallback || text;
+}
+
+function renderPathItem(title, relativePath, statusInfo, description) {
+  const status = statusInfo?.status || 'unknown';
+  return `
+    <div class="path-item">
+      <div class="path-item-head">
+        <div class="path-item-title">${escapeHtml(title)}</div>
+        <span class="status-pill ${escapeHtml(status)}">${escapeHtml(statusLabel(status))}</span>
+      </div>
+      <div class="path-item-path">${escapeHtml(relativePath)}</div>
+      <div class="path-item-desc">${escapeHtml(description)}${statusInfo?.message ? ' · ' + escapeHtml(statusInfo.message) : ''}</div>
+    </div>
   `;
+}
+
+function renderPathSettings(data) {
+  const storage = data.storage || {};
+  const knowledge = data.knowledge || {};
+  const outputList = document.getElementById('outputPathList');
+  const knowledgeList = document.getElementById('knowledgePathList');
+  if (outputList) {
+    outputList.innerHTML = [
+      renderPathItem(
+        '上传原件目录',
+        relativeProjectPath(storage.input?.path, 'data/input'),
+        storage.input,
+        '保存上传的视频、PDF 和每次任务的原始输入文件。'
+      ),
+      renderPathItem(
+        '工作产物目录',
+        relativeProjectPath(storage.work?.path, 'data/work'),
+        storage.work,
+        '保存初版 ASR SRT、本地可复用 ASR 结果、任务术语表、中间 SRT、最终 SRT 和各类处理报告。'
+      ),
+      renderPathItem(
+        '渲染输出目录',
+        relativeProjectPath(storage.output?.path, 'data/output'),
+        storage.output,
+        '保存 DaVinci Resolve 输出的视频成片。'
+      ),
+      renderPathItem(
+        '任务日志目录',
+        relativeProjectPath(storage.logs?.path, 'data/logs'),
+        storage.logs,
+        '保存 JSONL 运行日志、失败诊断和阶段进度记录。'
+      ),
+    ].join('');
+  }
+  if (knowledgeList) {
+    knowledgeList.innerHTML = renderPathItem(
+      '知识库目录',
+      relativeProjectPath(knowledge.directory, 'data/work/knowledge_base'),
+      { status: knowledge.status, message: knowledge.message },
+      '保存跨项目知识库条目、术语规则和格式规范。'
+    );
+  }
 }
 
 function formatBytes(bytes) {
@@ -1146,15 +1906,34 @@ async function readJsonResponse(resp) {
 function applySavedConfig(config) {
   const modelInput = document.getElementById('modelInput');
   const baseUrlInput = document.getElementById('baseUrlInput');
+  const apiKeyInput = document.getElementById('apiKeyInput');
+  const systemPromptInput = document.getElementById('systemPromptInput');
   const renderPresetInput = document.getElementById('renderPresetInput');
   const removeFillersInput = document.getElementById('removeFillersInput');
+  const removePunctuationInput = document.getElementById('removePunctuationInput');
+  const commaAsSpaceInput = document.getElementById('commaAsSpaceInput');
   const subtitleMinCharsInput = document.getElementById('subtitleMinCharsInput');
   const subtitleMaxCharsInput = document.getElementById('subtitleMaxCharsInput');
   if (!modelInput.value && config.model) modelInput.value = config.model;
   if (!baseUrlInput.value && config.base_url) baseUrlInput.value = config.base_url;
+  if (apiKeyInput && !apiKeyInput.value && config.api_key) apiKeyInput.value = config.api_key;
+  if (systemPromptInput && !systemPromptInput.value && config.system_prompt) systemPromptInput.value = config.system_prompt;
   if (config.engine && config.engine !== 'local') STATE.engine = config.engine;
   if (renderPresetInput && config.render_preset) renderPresetInput.value = config.render_preset;
-  if (removeFillersInput && config.remove_fillers !== undefined) removeFillersInput.value = config.remove_fillers;
+  if (removeFillersInput && config.remove_fillers !== undefined) {
+    const value = String(config.remove_fillers).trim() === '嗯,呃,啊'
+      ? '嗯\n呃\n啊\n呢'
+      : config.remove_fillers;
+    setCleanupState('fillers', parseCleanupWords(value));
+  }
+  if (removePunctuationInput && config.remove_punctuation !== undefined) {
+    const rawPunctuation = String(config.remove_punctuation || '');
+    const migratedPunctuation = rawPunctuation && !rawPunctuation.replace(/[，,]/g, '').trim() ? '。' : rawPunctuation;
+    setCleanupState('punctuation', parseCleanupPunctuation(migratedPunctuation));
+  }
+  if (commaAsSpaceInput) {
+    commaAsSpaceInput.checked = config.comma_as_space !== false;
+  }
   if (subtitleMinCharsInput && config.subtitle_min_chars) subtitleMinCharsInput.value = config.subtitle_min_chars;
   if (subtitleMaxCharsInput && config.subtitle_max_chars) subtitleMaxCharsInput.value = config.subtitle_max_chars;
   if (config.segmented_asr !== undefined) document.getElementById('segmentedAsrInput').checked = Boolean(config.segmented_asr);
@@ -1169,11 +1948,43 @@ function applySavedConfig(config) {
   }
 }
 
+async function loadSavedConfig() {
+  try {
+    const resp = await fetch('/api/config');
+    const data = await readJsonResponse(resp);
+    applySavedConfig(data.config || {});
+    checkReady();
+  } catch (_e) {
+    // The environment status panel will show backend availability; config loading is best-effort.
+  }
+}
+
+function currentConfigPayload() {
+  return {
+    ...llmPayload(),
+    engine: STATE.engine,
+    segmented_asr: document.getElementById('segmentedAsrInput')?.checked || false,
+    asr_max_workers: document.getElementById('asrWorkersInput')?.value || '1',
+    asr_segment_minutes: document.getElementById('asrSegmentMinutesInput')?.value || '10',
+  };
+}
+
+function scheduleConfigSave() {
+  clearTimeout(CONFIG_SAVE_TIMER);
+  CONFIG_SAVE_TIMER = setTimeout(() => {
+    fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(currentConfigPayload()),
+    }).catch(() => {});
+  }, 800);
+}
+
 function updateEngineAvailability() {
   const engines = STATE.systemStatus?.asr || {};
   const select = document.getElementById('engineSelect');
   const hint = document.getElementById('asrEngineHint');
-  const order = ['bcut', 'jianying', 'kuaishou'];
+  const order = ['bcut', 'jianying'];
   const knownIds = order.filter(id => engines[id]).concat(
     Object.keys(engines).filter(id => !order.includes(id))
   );
@@ -1205,36 +2016,56 @@ async function loadSystemStatus() {
   const grid = document.getElementById('systemStatusGrid');
   summary.textContent = '正在检查运行环境...';
   grid.innerHTML = '';
-  try {
-    const resp = await fetch('/api/system/status');
-    const data = await resp.json();
-    STATE.systemStatus = data;
-    const asrItems = Object.values(data.asr || {}).map(item =>
-      renderStatusItem(item.label || item.id || 'ASR 接口', item.status, item.message)
-    );
-    grid.innerHTML = [
-      renderStatusItem('Web 后端', data.service?.status, data.service?.message),
-      renderStatusItem('当前任务', data.job?.status, data.job?.message || '空闲或等待用户操作'),
-      renderStatusItem('FFmpeg', data.dependencies?.ffmpeg?.status, data.dependencies?.ffmpeg?.message),
-      renderStatusItem('FFprobe', data.dependencies?.ffprobe?.status, data.dependencies?.ffprobe?.message),
-      renderStatusItem('DaVinci Resolve', data.dependencies?.resolve?.status, data.dependencies?.resolve?.message),
-      renderStatusItem('LLM 配置', data.llm?.status, `${data.llm?.message || ''}${data.llm?.base_url ? '：' + data.llm.base_url : ''}`),
-      renderStatusItem('当前知识库', data.knowledge?.status, `${data.knowledge?.message || ''}${typeof data.knowledge?.entry_count === 'number' ? ' · 条目 ' + data.knowledge.entry_count : ''}`),
-      ...asrItems,
-      renderStatusItem('工作目录', data.storage?.work?.status, data.storage?.work?.message),
-    ].join('');
-    summary.textContent = data.service?.local_llm_note || '系统状态已刷新';
-    applySavedConfig(data.config || {});
-    updateEngineAvailability();
-    checkReady();
+	  try {
+	    const resp = await fetch('/api/system/status');
+	    const data = await resp.json();
+	    STATE.systemStatus = data;
+	    renderPathSettings(data);
+	    renderSystemStatusGrid(data);
+	    summary.textContent = data.service?.local_llm_note || '系统状态已刷新';
+	    updateEngineAvailability();
+	    await loadLocalInitialAsr();
+	    checkReady();
   } catch (e) {
     summary.textContent = '系统状态读取失败：' + e.message;
   }
 }
 
+async function loadLocalInitialAsr() {
+  const hint = document.getElementById('localAsrHint');
+  if (!hint) return;
+  const videoName = currentVideoName();
+  if (!videoName) {
+    STATE.localInitialAsr = null;
+    hint.textContent = '请先选择视频；系统会在本地字幕文件目录中匹配相似文件名的初版 ASR SRT。';
+    checkReady();
+    return;
+  }
+  try {
+    const params = new URLSearchParams({ video_name: videoName });
+    const resp = await fetch('/api/local-initial-asr?' + params.toString());
+    const data = await readJsonResponse(resp);
+    const candidate = data.candidate || null;
+    STATE.localInitialAsr = candidate;
+    if (!candidate) {
+      hint.textContent = data.message || '本地项目文件夹里没有找到可用的初版 ASR 字幕。';
+      checkReady();
+      return;
+    }
+    const termsText = candidate.terms_name ? `术语表：${candidate.terms_name}` : '未找到同批次已确认术语表，将只用知识库和 LLM 审校';
+    const scoreText = candidate.match_score ? `匹配度：${Math.round(Number(candidate.match_score) * 100)}%` : '已匹配当前视频名';
+    hint.textContent = `本地可用：${candidate.srt_name} · ${scoreText} · ${termsText}`;
+    checkReady();
+  } catch (e) {
+    STATE.localInitialAsr = null;
+    hint.textContent = '本地 ASR 结果检测失败：' + e.message;
+    checkReady();
+  }
+}
+
 // Start pipeline
 document.getElementById('startBtn').addEventListener('click', async () => {
-  if (!STATE.video) return;
+  if (!hasVideoInput()) return;
   await loadSystemStatus();
   const selectedAsr = STATE.systemStatus?.asr?.[STATE.engine] || {};
   if (selectedAsr.available !== true) {
@@ -1249,16 +2080,11 @@ document.getElementById('startBtn').addEventListener('click', async () => {
   const baseUrlValue = document.getElementById('baseUrlInput').value.trim();
   const apiKeyValue = document.getElementById('apiKeyInput').value.trim();
   if (!modelValue || !baseUrlValue) {
-    showUploadError('请先填写 LLM 模型和 API 地址，并点击“测试 LLM 连接”。');
+    showUploadError('请先填写 LLM 模型和 API 地址。');
     return;
   }
-  const isLocalLlm = /^(https?:\/\/)?(127\.0\.0\.1|localhost)(:|\/|$)/i.test(baseUrlValue);
-  if (!apiKeyValue && !isLocalLlm) {
-    showUploadError('请填写 API Key，并点击“测试 LLM 连接”。');
-    return;
-  }
-  if (!STATE.llmTestOk) {
-    showUploadError('请先点击“测试 LLM 连接”，确认模型和 API 地址可用。');
+  if (!apiKeyValue && !STATE.systemStatus?.llm?.has_api_key && !isLocalLlmUrl(baseUrlValue)) {
+    showUploadError('请填写 API Key，或使用本地模型服务地址。');
     return;
   }
   await fetch('/api/config', {
@@ -1267,6 +2093,8 @@ document.getElementById('startBtn').addEventListener('click', async () => {
     body: JSON.stringify({
       model: modelValue,
       base_url: baseUrlValue,
+      api_key: apiKeyValue,
+      system_prompt: document.getElementById('systemPromptInput').value.trim(),
       engine: STATE.engine,
       segmented_asr: document.getElementById('segmentedAsrInput').checked,
       asr_max_workers: document.getElementById('asrWorkersInput').value || '1',
@@ -1274,6 +2102,8 @@ document.getElementById('startBtn').addEventListener('click', async () => {
       srt_only: document.getElementById('srtOnlyInput').checked,
       render_preset: document.getElementById('renderPresetInput').value.trim() || 'ffpg-fast-23',
       remove_fillers: document.getElementById('removeFillersInput').value,
+      remove_punctuation: document.getElementById('removePunctuationInput').value,
+      comma_as_space: document.getElementById('commaAsSpaceInput').checked,
       subtitle_min_chars: document.getElementById('subtitleMinCharsInput').value || '5',
       subtitle_max_chars: document.getElementById('subtitleMaxCharsInput').value || '20',
     }),
@@ -1282,14 +2112,19 @@ document.getElementById('startBtn').addEventListener('click', async () => {
   resetProgressUI();
   enableViewTab('progress', true);
   showView('progress');
-  document.getElementById('progressTitle').textContent = STATE.pdf ? '上传中，准备课程术语预检...' : '上传中，未使用课程术语表...';
+  document.getElementById('progressTitle').textContent = STATE.pdf ? '上传中，准备术语预检...' : '上传中，未使用任务术语表...';
   document.getElementById('progressSubtitle').textContent = STATE.pdf
-    ? '上传 PDF 后会先提取课程术语表，等待你确认后再进入 ASR。'
-    : '本次未上传 PDF，将跳过课程术语预检，直接进入 ASR 和字幕优化。';
+    ? '上传 PDF 后会先提取术语表，等待你确认后再进入 ASR。'
+    : '本次未上传 PDF，将跳过术语预检，直接进入 ASR 和字幕优化。';
   document.getElementById('errorMsg').classList.add('hidden');
 
   const form = new FormData();
-  form.append('video', STATE.video);
+  const videoPath = (STATE.videoPath || '').trim();
+  if (videoPath) {
+    form.append('video_path', videoPath);
+  } else {
+    form.append('video', STATE.video);
+  }
   if (STATE.pdf) form.append('pdf', STATE.pdf);
   form.append('engine', STATE.engine);
   const model = document.getElementById('modelInput').value.trim();
@@ -1303,6 +2138,8 @@ document.getElementById('startBtn').addEventListener('click', async () => {
   if (document.getElementById('srtOnlyInput').checked) form.append('srt_only', '1');
   form.append('render_preset', document.getElementById('renderPresetInput').value.trim() || 'ffpg-fast-23');
   form.append('remove_fillers', document.getElementById('removeFillersInput').value);
+  form.append('remove_punctuation', document.getElementById('removePunctuationInput').value);
+  form.append('comma_as_space', document.getElementById('commaAsSpaceInput').checked ? '1' : '0');
   form.append('subtitle_min_chars', document.getElementById('subtitleMinCharsInput').value || '5');
   form.append('subtitle_max_chars', document.getElementById('subtitleMaxCharsInput').value || '20');
   if (document.getElementById('segmentedAsrInput').checked) {
@@ -1319,6 +2156,86 @@ document.getElementById('startBtn').addEventListener('click', async () => {
     connectSSE(data.run_id);
   } catch (e) {
     showUploadError('上传失败: ' + e.message);
+  }
+});
+
+document.getElementById('localAsrStartBtn').addEventListener('click', async () => {
+  const button = document.getElementById('localAsrStartBtn');
+  button.disabled = true;
+  if (!hasVideoInput()) {
+    showUploadError('请先选择当前视频，用于匹配本地初版 ASR 字幕。');
+    button.disabled = false;
+    checkReady();
+    return;
+  }
+  await loadLocalInitialAsr();
+  if (!STATE.localInitialAsr) {
+    showUploadError('本地字幕文件目录没有找到与当前视频文件名相似的初版 ASR SRT。');
+    button.disabled = false;
+    checkReady();
+    return;
+  }
+  const modelValue = document.getElementById('modelInput').value.trim();
+  const baseUrlValue = document.getElementById('baseUrlInput').value.trim();
+  const apiKeyValue = document.getElementById('apiKeyInput').value.trim();
+  if (!modelValue || !baseUrlValue) {
+    showUploadError('请先填写 LLM 模型和 API 地址。');
+    button.disabled = false;
+    checkReady();
+    return;
+  }
+  if (!apiKeyValue && !STATE.systemStatus?.llm?.has_api_key && !isLocalLlmUrl(baseUrlValue)) {
+    showUploadError('请填写 API Key，或使用本地模型服务地址。');
+    button.disabled = false;
+    checkReady();
+    return;
+  }
+  await fetch('/api/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: modelValue,
+      base_url: baseUrlValue,
+      api_key: apiKeyValue,
+      system_prompt: document.getElementById('systemPromptInput').value.trim(),
+      engine: STATE.engine,
+      srt_only: document.getElementById('srtOnlyInput').checked,
+      render_preset: document.getElementById('renderPresetInput').value.trim() || 'ffpg-fast-23',
+      remove_fillers: document.getElementById('removeFillersInput').value,
+      remove_punctuation: document.getElementById('removePunctuationInput').value,
+      comma_as_space: document.getElementById('commaAsSpaceInput').checked,
+      subtitle_min_chars: document.getElementById('subtitleMinCharsInput').value || '5',
+      subtitle_max_chars: document.getElementById('subtitleMaxCharsInput').value || '20',
+    }),
+  }).catch(() => {});
+
+  resetProgressUI();
+  enableViewTab('progress', true);
+  showView('progress');
+  document.getElementById('progressTitle').textContent = '使用本地 ASR 结果继续...';
+  document.getElementById('progressSubtitle').textContent = `本次将使用 ${STATE.localInitialAsr.srt_name}，跳过在线 ASR，直接进入后续清理、术语校正、LLM 审校和输出。`;
+  document.getElementById('errorMsg').classList.add('hidden');
+  try {
+    const form = new FormData();
+    const videoPath = (STATE.videoPath || '').trim();
+    if (videoPath) {
+      form.append('video_path', videoPath);
+    } else {
+      form.append('video', STATE.video);
+    }
+    if (STATE.pdf) form.append('pdf', STATE.pdf);
+    const payload = llmPayload();
+    Object.entries(payload).forEach(([key, value]) => form.append(key, value == null ? '' : String(value)));
+    const resp = await fetch('/api/resume-local-initial-asr-upload', { method: 'POST', body: form });
+    const data = await readJsonResponse(resp);
+    if (data.error) throw new Error(data.error);
+    STATE.runId = data.run_id;
+    connectSSE(data.run_id);
+  } catch (e) {
+    showUploadError('启动失败: ' + e.message);
+  } finally {
+    button.disabled = false;
+    checkReady();
   }
 });
 
@@ -1356,8 +2273,8 @@ function connectSSE(runId) {
       updateGlobalProgress(evt);
 
       if (evt.status === 'review') {
-        document.getElementById('progressTitle').textContent = '等待课程术语确认';
-        document.getElementById('progressSubtitle').textContent = '课程术语表已生成，需要你确认后才会继续 ASR 和后续字幕处理。';
+        document.getElementById('progressTitle').textContent = '等待术语确认';
+        document.getElementById('progressSubtitle').textContent = '术语表已生成，需要你确认后才会继续 ASR 和后续字幕处理。';
         enableViewTab('review', true);
         loadTermReview(runId);
         showView('review');
@@ -1582,6 +2499,8 @@ function llmPayload() {
     srt_only: document.getElementById('srtOnlyInput').checked,
     render_preset: document.getElementById('renderPresetInput').value.trim() || 'ffpg-fast-23',
     remove_fillers: document.getElementById('removeFillersInput').value,
+    remove_punctuation: document.getElementById('removePunctuationInput').value,
+    comma_as_space: document.getElementById('commaAsSpaceInput').checked,
     subtitle_min_chars: document.getElementById('subtitleMinCharsInput').value || '5',
     subtitle_max_chars: document.getElementById('subtitleMaxCharsInput').value || '20',
   };
@@ -1591,7 +2510,43 @@ document.getElementById('refreshSystemBtn').addEventListener('click', loadSystem
 
 document.getElementById('openModelHelpBtn').addEventListener('click', () => {
   const help = document.getElementById('systemHelpText');
-  help.textContent = 'ASR 现在只保留在线接口。必剪 B 接口作为默认可用接口；剪映 J 接口需要配置可用签名服务；快手 K 接口已搬运但实测接口禁用。127.0.0.1:1234 是本地 LLM API 地址，不是本页面地址。';
+  help.textContent = 'ASR 现在只保留在线接口。必剪 B 接口作为默认可用接口；剪映 J 接口需要配置可用签名服务。127.0.0.1:1234 是本地 LLM API 地址，不是本页面地址。';
+});
+
+document.getElementById('exportDiagnosticsBtn').addEventListener('click', async () => {
+  const help = document.getElementById('systemHelpText');
+  const button = document.getElementById('exportDiagnosticsBtn');
+  button.disabled = true;
+  button.textContent = '正在导出...';
+  help.className = 'inline-result';
+  help.textContent = '正在整理诊断日志，包内不会包含视频、SRT 或明文 API Key。';
+  try {
+    const resp = await fetch('/api/diagnostics/export');
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(text.trim().slice(0, 240) || `HTTP ${resp.status}`);
+    }
+    const blob = await resp.blob();
+    const disposition = resp.headers.get('Content-Disposition') || '';
+    const matched = disposition.match(/filename="?([^";]+)"?/i);
+    const filename = matched ? matched[1] : `diagnostics-${Date.now()}.zip`;
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    help.className = 'inline-result ok';
+    help.textContent = `诊断日志已导出：${filename}`;
+  } catch (e) {
+    help.className = 'inline-result failed';
+    help.textContent = '诊断日志导出失败：' + e.message;
+  } finally {
+    button.disabled = false;
+    button.textContent = '导出诊断日志';
+  }
 });
 
 document.getElementById('testLlmBtn').addEventListener('click', async () => {
@@ -1608,11 +2563,16 @@ document.getElementById('testLlmBtn').addEventListener('click', async () => {
       body: JSON.stringify(llmPayload()),
     });
     const data = await readJsonResponse(resp);
-    if (!data.ok) throw new Error(data.error || '连接失败');
-    STATE.llmTestOk = true;
-    result.className = 'inline-result ok';
-    result.textContent = `连接成功：${data.model} · ${data.base_url}`;
-    await loadSystemStatus();
+	    if (!data.ok) throw new Error(data.error || '连接失败');
+	    STATE.llmTestOk = true;
+	    await fetch('/api/config', {
+	      method: 'POST',
+	      headers: { 'Content-Type': 'application/json' },
+	      body: JSON.stringify(llmPayload()),
+	    }).catch(() => {});
+	    result.className = 'inline-result ok';
+	    result.textContent = `连接成功：${data.model} · ${data.base_url}`;
+	    await loadSystemStatus();
     checkReady();
   } catch (e) {
     result.className = 'inline-result failed';
@@ -1662,7 +2622,7 @@ async function loadResumableRuns() {
           <div class="resume-item-meta">
             ${escapeHtml(formatHistoryTime(run.updated_at))} · Run ${escapeHtml(run.run_id || '?')}<br>
             当前 SRT：${escapeHtml(run.srt_name || '已有字幕')}<br>
-            ${run.pdf_name ? '课程 PDF：' + escapeHtml(run.pdf_name) : '未关联课程 PDF'}
+            ${run.pdf_name ? '参考 PDF：' + escapeHtml(run.pdf_name) : '未关联参考 PDF'}
           </div>
           <div class="resume-item-badges">
             ${index === 0 ? '<span class="resume-badge ok">最新</span>' : ''}
@@ -2011,14 +2971,18 @@ async function loadTermReview(runId) {
       body.innerHTML = '<tr><td colspan="4" class="terms-note">没有候选术语，可直接继续</td></tr>';
       return;
     }
-    body.innerHTML = STATE.terms.map((row, i) => `
+    body.innerHTML = STATE.terms.map((row, i) => {
+      const kindLabel = row.kind === 'course_code' ? '课程编号 · ' : '';
+      const warningLabel = row.review_warning === 'correct_not_verified_in_pdf_text' ? '需人工确认 · ' : '';
+      return `
       <tr data-index="${i}">
         <td><input type="checkbox" class="term-enabled" ${row.enabled ? 'checked' : ''}></td>
         <td><input type="text" class="term-wrong" value="${escapeHtml(row.wrong)}"></td>
         <td><input type="text" class="term-correct" value="${escapeHtml(row.correct)}"></td>
-        <td class="terms-note">${escapeHtml(row.evidence || row.note || row.confidence || '')}</td>
+        <td class="terms-note">${escapeHtml(kindLabel + warningLabel + (row.evidence || row.note || row.confidence || ''))}</td>
       </tr>
-    `).join('');
+    `;
+    }).join('');
   } catch (e) {
     meta.textContent = '';
     error.textContent = '❌ ' + e.message;
@@ -2049,7 +3013,7 @@ document.getElementById('confirmTermsBtn').addEventListener('click', async () =>
     enableViewTab('progress', true);
     showView('progress');
     document.getElementById('progressTitle').textContent = '术语已确认，开始后续流程...';
-    document.getElementById('progressSubtitle').textContent = '确认版课程术语表已保存，正在继续 ASR、术语校正和字幕优化。';
+    document.getElementById('progressSubtitle').textContent = '确认版术语表已保存，正在继续 ASR、术语校正和字幕优化。';
     connectSSE(STATE.runId);
   } catch (e) {
     error.textContent = '❌ ' + e.message;
@@ -2071,7 +3035,7 @@ document.getElementById('abortTermsBtn').addEventListener('click', async () => {
     if (data.error) throw new Error(data.error);
     enableViewTab('review', false);
     showView('newTask');
-    showUploadError('已终止课程术语确认。上传文件和术语表已保留，可重新开始或到历史任务查看可恢复结果。');
+    showUploadError('已终止术语确认。上传文件和术语表已保留，可重新开始或到历史任务查看可恢复结果。');
     loadResumableRuns();
   } catch (e) {
     error.textContent = '❌ ' + e.message;
@@ -2081,9 +3045,19 @@ document.getElementById('abortTermsBtn').addEventListener('click', async () => {
   }
 });
 
-showView('env');
+{
+  const [initialModule, initialSubtab] = restoreActiveView();
+  setModule(initialModule, initialSubtab, { skipSave: true });
+  if (initialModule === 'task' && initialSubtab === 'progress') {
+    document.getElementById('progressCard').classList.remove('hidden');
+  }
+  if (initialModule === 'task' && initialSubtab === 'terms') {
+    document.getElementById('termReviewCard').classList.remove('hidden');
+  }
+}
+initializeCleanupEditors();
 checkReady();
-loadSystemStatus();
+loadSavedConfig().finally(loadSystemStatus);
 </script>
 </body>
 </html>

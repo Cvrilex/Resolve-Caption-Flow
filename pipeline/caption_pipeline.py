@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -21,14 +22,20 @@ from pathlib import Path
 from typing import Any
 
 
-ROOT = Path(__file__).resolve().parent
-REPO_ROOT = ROOT.parent
-DEFAULT_TOOL_DIR = ROOT / "tool"
-DEFAULT_WORK_DIR = ROOT / "work"
-DEFAULT_OUTPUT_DIR = ROOT / "output"
-DEFAULT_LOG_DIR = ROOT / "logs"
+PIPELINE_DIR = Path(__file__).resolve().parent
+REPO_ROOT = PIPELINE_DIR.parent
+INTEGRATIONS_DIR = REPO_ROOT / "integrations"
+RESOURCES_DIR = REPO_ROOT / "resources"
+DATA_DIR = REPO_ROOT / "data"
+DEFAULT_TOOL_DIR = INTEGRATIONS_DIR
+DEFAULT_WORK_DIR = DATA_DIR / "work"
+DEFAULT_OUTPUT_DIR = DATA_DIR / "output"
+DEFAULT_LOG_DIR = DATA_DIR / "logs"
 BUNDLED_PYTHON = Path(
-    "/Users/x/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3"
+    os.environ.get(
+        "DRAUTOCUT_PDF_PYTHON",
+        "/Users/x/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+    )
 )
 
 RESOLVE_MODULES = Path(
@@ -108,12 +115,28 @@ def run_cmd(args: list[str], logger: Logger, step: str) -> subprocess.CompletedP
 def require_tool(name: str) -> str:
     found = shutil.which(name)
     if not found:
+        if name in {"ffmpeg", "ffprobe"}:
+            raise PipelineError(
+                f"Missing required command: {name}. 请安装 FFmpeg；它会同时提供 ffmpeg 和 ffprobe。"
+            )
         raise PipelineError(f"Missing required command: {name}")
     return found
 
 
 def stem_for(video: Path) -> str:
     return video.stem.replace(" ", "_")
+
+
+def resolve_visible_name_for(video: Path) -> str:
+    """User-facing Resolve project name based on the original video filename."""
+    name = video.stem.strip()
+    name = re.sub(r"[\x00-\x1f/\\:*?\"<>|]+", " ", name)
+    name = re.sub(r"\s+", " ", name).strip()
+    return name or "未命名视频"
+
+
+def resolve_output_name_for(video: Path) -> str:
+    return f"{resolve_visible_name_for(video)}字幕版"
 
 
 def probe_video(video: Path, logger: Logger) -> VideoInfo:
@@ -234,11 +257,10 @@ def segment_boundaries_ms(segments: list[Any]) -> list[int]:
 
 
 def run_segmented_online_asr(video: Path, srt_path: Path, engine: str, args: argparse.Namespace, logger: Logger) -> tuple[Path, list[int]]:
-    src_dir = REPO_ROOT / "src"
-    if str(src_dir) not in sys.path:
-        sys.path.insert(0, str(src_dir))
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
     try:
-        from drautocut.pipeline.long_asr import run_online_long_video_asr
+        from caption_core.pipeline.long_asr import run_online_long_video_asr
     except Exception as exc:
         raise PipelineError(f"Failed to import segmented ASR pipeline: {exc}") from exc
 
@@ -316,6 +338,58 @@ def correct_srt_with_terms(srt: Path, terms: Path, base: str, logger: Logger) ->
         changed_cue_count=result.get("changed_cue_count"),
         replacement_count=result.get("replacement_count"),
         unmatched_replacement_count=result.get("unmatched_replacement_count"),
+    )
+    return output, report, result
+
+
+def normalize_course_code_srt(
+    srt: Path,
+    context: Path | None,
+    base: str,
+    logger: Logger,
+    stage: str,
+) -> tuple[Path, Path | None, dict[str, Any] | None]:
+    if not context:
+        return srt, None, None
+    try:
+        from course_code_normalizer import extract_course_code_from_filename, normalize_srt_course_code  # type: ignore
+    except Exception as exc:
+        raise PipelineError(f"Failed to import course_code_normalizer: {exc}") from exc
+
+    rule = extract_course_code_from_filename(context)
+    if not rule:
+        logger.event(
+            "course_code_normalize",
+            "skipped",
+            "no course code found in context filename",
+            context=str(context),
+            stage=stage,
+        )
+        return srt, None, None
+
+    output = DEFAULT_WORK_DIR / f"{base}.{stage}.course-code.srt"
+    report = DEFAULT_LOG_DIR / f"{base}.{stage}.course-code-report.json"
+    logger.event(
+        "course_code_normalize",
+        "running",
+        "normalizing course code variants",
+        srt=str(srt),
+        output=str(output),
+        context=str(context),
+        standard=rule.standard,
+        stage=stage,
+    )
+    result = normalize_srt_course_code(srt, output, report, context=context, rule=rule)
+    logger.event(
+        "course_code_normalize",
+        "done",
+        "course code normalization complete",
+        output_srt=str(output),
+        report=str(report),
+        standard=rule.standard,
+        stage=stage,
+        changed_cue_count=result.get("changed_cue_count"),
+        replacement_count=result.get("replacement_count"),
     )
     return output, report, result
 
@@ -419,6 +493,7 @@ def repair_asr_boundaries(
             max_chars=args.subtitle_max_chars,
             min_chars=args.subtitle_min_chars,
             punctuation=args.remove_punctuation,
+            comma_as_space=bool(getattr(args, "comma_as_space", True)),
             model=args.llm_model,
             base_url=args.llm_base_url,
             api_key=api_key,
@@ -462,21 +537,21 @@ def optimize_subtitles(srt: Path, base: str, args: argparse.Namespace, logger: L
         from subtitle_optimizer import parse_filler_words, optimize_srt  # type: ignore
     except Exception as exc:
         raise PipelineError(f"Failed to import subtitle_optimizer: {exc}") from exc
-    api_key = args.llm_api_key or os.environ.get("OPENAI_API_KEY")
     output = DEFAULT_WORK_DIR / f"{base}.optimized.srt"
     report = DEFAULT_LOG_DIR / f"{base}.subtitle-optimization-report.json"
     logger.event(
         "subtitle_optimize",
         "running",
-        "cleaning punctuation and optimizing overlong subtitles",
+        "cleaning punctuation and locally splitting overlong subtitles",
         srt=str(srt),
         output=str(output),
         max_chars=args.subtitle_max_chars,
         remove_punctuation=args.remove_punctuation,
         remove_fillers=getattr(args, "remove_fillers", ""),
+        comma_as_space=bool(getattr(args, "comma_as_space", True)),
         model=args.llm_model,
         base_url=args.llm_base_url,
-        use_llm=not args.no_subtitle_llm,
+        use_llm=False,
     )
 
     def log_progress(payload: dict[str, Any]) -> None:
@@ -492,10 +567,11 @@ def optimize_subtitles(srt: Path, base: str, args: argparse.Namespace, logger: L
         max_chars=args.subtitle_max_chars,
         min_chars=args.subtitle_min_chars,
         punctuation=args.remove_punctuation,
+        comma_as_space=bool(getattr(args, "comma_as_space", True)),
         model=args.llm_model,
         base_url=args.llm_base_url,
-        api_key=api_key,
-        use_llm=not args.no_subtitle_llm,
+        api_key=None,
+        use_llm=False,
         fillers=parse_filler_words(getattr(args, "remove_fillers", None)),
         allow_neighbor_rewrite=args.allow_neighbor_rewrite,
         optimize_short=False,
@@ -520,6 +596,7 @@ def optimize_subtitles(srt: Path, base: str, args: argparse.Namespace, logger: L
 def review_terms_with_llm(srt: Path, terms: Path | None, base: str, args: argparse.Namespace, logger: Logger) -> tuple[Path, Path, dict[str, Any]]:
     try:
         from llm_term_reviewer import review_srt_terms  # type: ignore
+        from subtitle_optimizer import parse_filler_words  # type: ignore
     except Exception as exc:
         raise PipelineError(f"Failed to import llm_term_reviewer: {exc}") from exc
     api_key = args.llm_api_key or os.environ.get("OPENAI_API_KEY")
@@ -562,6 +639,9 @@ def review_terms_with_llm(srt: Path, terms: Path | None, base: str, args: argpar
             timeout=int(getattr(args, "llm_term_review_timeout", 45) or 45),
             use_llm=not getattr(args, "no_llm_term_review", False),
             fallback_on_llm_error=True,
+            punctuation=str(getattr(args, "remove_punctuation", "")),
+            fillers=parse_filler_words(getattr(args, "remove_fillers", None)),
+            comma_as_space=bool(getattr(args, "comma_as_space", True)),
             progress_callback=log_progress,
         )
     except Exception as exc:
@@ -598,7 +678,7 @@ def generate_terms_from_context(context: Path, srt: Path, base: str, args: argpa
         raise PipelineError("Missing LLM API key. Set OPENAI_API_KEY or pass --llm-api-key.")
     output = DEFAULT_WORK_DIR / f"{base}.terms.generated.json"
     python = BUNDLED_PYTHON if BUNDLED_PYTHON.exists() else Path(sys.executable)
-    term_mapper = ROOT / "term_mapper.py"
+    term_mapper = PIPELINE_DIR / "term_mapper.py"
     logger.event(
         "term_map",
         "running",
@@ -1366,6 +1446,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
 
     run_id = getattr(args, "run_id", None) or datetime.now().strftime("%Y%m%d-%H%M%S")
     base = f"{stem_for(video)}-{run_id}"
+    visible_video_name = resolve_visible_name_for(video)
     logger = Logger(DEFAULT_LOG_DIR / f"{base}.jsonl")
     logger.event("pipeline", "start", "MVP pipeline started", video=str(video), engine=args.engine)
     render_preset = None if args.no_render_preset else args.render_preset
@@ -1375,7 +1456,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
 
     if args.list_resolve_presets:
         resolve = connect_resolve(logger)
-        project = project_for_listing(resolve, args.project_name, f"DRautocut_MVP_{run_id}", logger)
+        project = project_for_listing(resolve, args.project_name, visible_video_name, logger)
         presets = list_render_presets(project)
         logger.event("resolve_render", "preset_list", "available render presets listed", presets=presets)
         return {
@@ -1393,10 +1474,20 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
     asr_boundary_result: dict[str, Any] | None = None
     correction_report: Path | None = None
     correction_result: dict[str, Any] | None = None
+    course_code_report: Path | None = None
+    course_code_result: dict[str, Any] | None = None
+    final_course_code_report: Path | None = None
+    final_course_code_result: dict[str, Any] | None = None
     llm_term_review_report: Path | None = None
     llm_term_review_result: dict[str, Any] | None = None
     subtitle_optimization_report: Path | None = None
     subtitle_optimization_result: dict[str, Any] | None = None
+    course_context: Path | None = None
+    course_context_value = str(getattr(args, "course_context", "") or getattr(args, "context", "") or "").strip()
+    if course_context_value:
+        course_context = Path(course_context_value).expanduser().resolve()
+        if not course_context.exists():
+            raise PipelineError(f"Course context file not found: {course_context}")
 
     if args.srt:
         logger.event("asr", "skipped", "using provided SRT", srt=str(srt), cue_count=count_srt_cues(srt))
@@ -1418,6 +1509,15 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             cue_count=count_srt_cues(srt),
             boundary_count=len(asr_boundary_ms),
         )
+    if original_srt is None:
+        original_srt = srt
+    srt, course_code_report, course_code_result = normalize_course_code_srt(
+        srt,
+        course_context,
+        base,
+        logger,
+        "post-asr",
+    )
     terms: Path | None = None
     if args.context:
         context = Path(args.context).expanduser().resolve()
@@ -1437,6 +1537,8 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             "original_srt": str(original_srt) if original_srt else None,
             "asr_boundary_report": str(asr_boundary_report) if asr_boundary_report else None,
             "asr_boundary_result": asr_boundary_result,
+            "course_code_report": str(course_code_report) if course_code_report else None,
+            "course_code_result": course_code_result,
             "needs_term_review": True,
             "log": str(logger.path),
         }
@@ -1470,6 +1572,14 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
         srt, llm_term_review_report, llm_term_review_result = review_terms_with_llm(srt, terms, base, args, logger)
         logger.event("srt", "llm_term_reviewed", "LLM-reviewed SRT ready for Resolve", srt=str(srt), cue_count=count_srt_cues(srt))
 
+    srt, final_course_code_report, final_course_code_result = normalize_course_code_srt(
+        srt,
+        course_context,
+        base,
+        logger,
+        "final",
+    )
+
     if getattr(args, "srt_only", False):
         result = {
             "video": str(video),
@@ -1477,6 +1587,10 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             "original_srt": str(original_srt) if original_srt else None,
             "asr_boundary_report": str(asr_boundary_report) if asr_boundary_report else None,
             "asr_boundary_result": asr_boundary_result,
+            "course_code_report": str(course_code_report) if course_code_report else None,
+            "course_code_result": course_code_result,
+            "final_course_code_report": str(final_course_code_report) if final_course_code_report else None,
+            "final_course_code_result": final_course_code_result,
             "correction_report": str(correction_report) if correction_report else None,
             "correction_result": correction_result,
             "llm_term_review_report": str(llm_term_review_report) if llm_term_review_report else None,
@@ -1491,10 +1605,10 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
         return result
 
     resolve = connect_resolve(logger)
-    project_name = args.project_name or f"DRautocut_MVP_{run_id}"
+    project_name = args.project_name or visible_video_name
     project = create_pipeline_project(resolve, project_name, template_path, logger)
     set_project_timing(project, info, logger)
-    timeline_name = f"{stem_for(video)}_{run_id}"
+    timeline_name = visible_video_name
     if args.use_template_timeline:
         media_pool, timeline = import_video_into_template_timeline(project, video, info, timeline_name, logger)
     else:
@@ -1528,6 +1642,8 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             "srt": str(srt),
             "original_srt": str(original_srt) if original_srt else None,
             "asr_boundary_report": str(asr_boundary_report) if asr_boundary_report else None,
+            "course_code_report": str(course_code_report) if course_code_report else None,
+            "final_course_code_report": str(final_course_code_report) if final_course_code_report else None,
             "correction_report": str(correction_report) if correction_report else None,
             "llm_term_review_report": str(llm_term_review_report) if llm_term_review_report else None,
             "subtitle_optimization_report": str(subtitle_optimization_report) if subtitle_optimization_report else None,
@@ -1540,7 +1656,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
         logger.event("pipeline", "prepared", "timeline prepared; render skipped", **result)
         return result
 
-    output_name = f"{stem_for(video)}_burned_{run_id}"
+    output_name = resolve_output_name_for(video)
     rendered = render_timeline(
         project,
         DEFAULT_OUTPUT_DIR.resolve(),
@@ -1557,6 +1673,10 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
         "srt": str(srt),
         "original_srt": str(original_srt) if original_srt else None,
         "asr_boundary_report": str(asr_boundary_report) if asr_boundary_report else None,
+        "course_code_report": str(course_code_report) if course_code_report else None,
+        "course_code_result": course_code_result,
+        "final_course_code_report": str(final_course_code_report) if final_course_code_report else None,
+        "final_course_code_result": final_course_code_result,
         "correction_report": str(correction_report) if correction_report else None,
         "correction_result": correction_result,
         "llm_term_review_report": str(llm_term_review_report) if llm_term_review_report else None,
@@ -1575,7 +1695,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the MVP video -> ASR -> Resolve render pipeline.")
-    parser.add_argument("--video", default=str(ROOT / "input" / "3min.mp4"), help="Input video path.")
+    parser.add_argument("--video", default=str(DATA_DIR / "input" / "3min.mp4"), help="Input video path.")
     parser.add_argument("--engine", choices=["bcut", "jianying", "kuaishou"], default="bcut", help="Online ASR engine.")
     parser.add_argument("--srt", help="Skip ASR and use this existing SRT.")
     parser.add_argument(
@@ -1617,6 +1737,10 @@ def parse_args() -> argparse.Namespace:
         "--context",
         help="Course context .txt/.md file. When set, an LLM-generated terms JSON is created before correction.",
     )
+    parser.add_argument(
+        "--course-context",
+        help="Course PDF/context filename used only for deterministic course metadata rules.",
+    )
     parser.add_argument("--llm-model", default=os.environ.get("OPENAI_MODEL", "gpt-4.1-mini"))
     parser.add_argument("--llm-base-url", default=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"))
     parser.add_argument("--llm-api-key", default=os.environ.get("OPENAI_API_KEY"))
@@ -1643,13 +1767,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--subtitle-min-chars", type=int, default=5, help="Cue text length threshold for short-cue window optimization.")
     parser.add_argument(
         "--remove-punctuation",
-        default="，,",
-        help="Characters to remove from subtitle text before overlong detection. Defaults to Chinese/English commas.",
+        default="。",
+        help="Characters to remove from subtitle text before overlong detection. Commas are handled by --comma-as-space.",
     )
     parser.add_argument(
         "--remove-fillers",
-        default="嗯,呃,啊",
+        default="嗯,呃,啊,呢",
         help="Comma/space separated filler words to remove from subtitle text. Empty value disables filler cleanup.",
+    )
+    parser.add_argument(
+        "--comma-as-space",
+        dest="comma_as_space",
+        action="store_true",
+        default=True,
+        help="Replace Chinese/English commas with spaces during subtitle cleanup.",
+    )
+    parser.add_argument(
+        "--no-comma-as-space",
+        dest="comma_as_space",
+        action="store_false",
+        help="Keep commas unless they are included in --remove-punctuation.",
     )
     parser.add_argument(
         "--no-subtitle-llm",
@@ -1682,7 +1819,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Render the current Resolve project/timeline without importing video or SRT.",
     )
-    parser.add_argument("--project-name", help="Resolve project name. Defaults to DRautocut_MVP_<run_id>.")
+    parser.add_argument("--project-name", help="Resolve project name. Defaults to the input video's filename without extension.")
     parser.add_argument(
         "--template-project",
         help="Path to a Resolve .drp template project to import as the per-run project.",

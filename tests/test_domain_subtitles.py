@@ -1,5 +1,5 @@
-from drautocut.domain.srt import Cue
-from drautocut.domain.subtitles import (
+from caption_core.domain.srt import Cue
+from caption_core.domain.subtitles import (
     clean_and_split_cues,
     clean_punctuation,
     interpolate_timestamps,

@@ -1,6 +1,6 @@
 # AsrTools 接口与字幕优化审阅
 
-审阅来源：`wheel/AsrTools`，仓库为 `bozoyan/AsrTools`。
+审阅来源：`vendor/AsrTools`，仓库为 `bozoyan/AsrTools`。
 
 ## 在线 ASR 接口
 
@@ -14,11 +14,17 @@
 - AsrTools 中的 `bk_asr/JianYingASR.py` 已有对应实现，当前项目也已经有 `JianYingASR`。
 - 该接口依赖签名服务。
 - 默认第三方签名服务 `https://asrtools-update.bkfeng.top/sign` 实测返回 HTTP 500。
-- 当前 WebUI 中保留该接口状态，但只有配置 `JIANYING_SIGN_SERVICE_URL` 后才允许选择。
+- 2026-06-25 复测发现可用兼容方案：
+  - `upload_sign` 使用旧版 appvr 静态签名头。
+  - VOD `ApplyUploadInner` region 必须使用 `cn-north-1`。
+  - `audio_subtitle/submit` 和 `query` 使用 appvr `6.6.0`。
+  - TOS commit 可能返回 400 `MismatchChecksum`，但前置 upload/check 成功后，`StoreUri` 仍可提交识别任务。
+- 已在 `/tmp` 生成中文短音频做端到端实测，J 接口成功返回 `你好这是字幕测试`。
+- 当前 WebUI 将 J 接口显示为可用；如果兼容签名后续失效，可以配置 `JIANYING_SIGN_SERVICE_URL` 覆盖。
 
 ### 快手 K 接口
 
-- 已搬运到 `mvp_pipeline/tool/online_asr.py`，类名为 `KuaiShouASR`。
+- 已搬运到 `integrations/online_asr.py`，类名为 `KuaiShouASR`。
 - 接口地址：`https://ai.kuaishou.com/api/effects/subtitle_generate`。
 - 使用 AsrTools 测试音频实测返回：
   - HTTP 200
@@ -30,7 +36,7 @@
 
 - WebUI 只展示在线 ASR 下拉菜单。
 - 当前默认可用接口为必剪 B 接口。
-- 剪映 J 接口需要可用签名服务。
+- 剪映 J 接口已接入内置兼容签名兜底，也支持自定义签名服务覆盖。
 - 快手 K 接口已搬运但接口侧禁用。
 - 本地 ASR 功能暂时下线，主流程不再保留 `local` 引擎分支，WebUI 不再展示模型下载、环境准备、本地模型状态或本地 ASR 选项。
 
@@ -57,9 +63,9 @@ AsrTools 的字幕优化流程主要集中在 `main.py` 和 `split_by_llm.py`：
 
 ## 不建议直接照搬的点
 
-- 英文字幕会被转小写，医疗缩写和药名可能被破坏。
-- 相似度阈值较宽，长医疗字幕需要更严格的内容守恒校验。
-- 默认目标长度偏短，医疗课程字幕不宜机械压到过短。
+- 英文字幕会被转小写，专业缩写和专有名词可能被破坏。
+- 相似度阈值较宽，长专业字幕需要更严格的内容守恒校验。
+- 默认目标长度偏短，不宜机械压缩长视频字幕。
 - 全文语义断句仍然可能很慢，必须配合当前项目已有的阶段进度、失败恢复和分批策略。
 
 ## 后续融合方向

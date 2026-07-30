@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from drautocut.domain import Cue, Replacement, parse_srt, preview_replacements, replacements_from_payload
+from caption_core.domain import Cue, Replacement, parse_srt, preview_replacements, replacements_from_payload
 
 
 @dataclass(frozen=True)

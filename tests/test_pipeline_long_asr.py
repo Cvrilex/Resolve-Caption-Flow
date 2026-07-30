@@ -1,9 +1,9 @@
 from pathlib import Path
 
-from drautocut.domain.srt import Cue
-from drautocut.integrations.ffmpeg import MediaInfo
-from drautocut.pipeline.long_asr import run_online_long_video_asr
-from drautocut.pipeline.segments import SilenceRange
+from caption_core.domain.srt import Cue
+from caption_core.integrations.ffmpeg import MediaInfo
+from caption_core.pipeline.long_asr import run_online_long_video_asr
+from caption_core.pipeline.segments import SilenceRange
 
 
 def test_run_online_long_video_asr_orchestrates_prepare_segment_asr_and_write(
@@ -15,13 +15,13 @@ def test_run_online_long_video_asr_orchestrates_prepare_segment_asr_and_write(
     output = tmp_path / "out.srt"
     video.write_text("fake", encoding="utf-8")
 
-    monkeypatch.setattr("drautocut.pipeline.long_asr.probe_media", lambda path: MediaInfo(duration_ms=20 * 60 * 1000))
+    monkeypatch.setattr("caption_core.pipeline.long_asr.probe_media", lambda path: MediaInfo(duration_ms=20 * 60 * 1000))
     monkeypatch.setattr(
-        "drautocut.pipeline.long_asr.detect_silences",
+        "caption_core.pipeline.long_asr.detect_silences",
         lambda path: [SilenceRange(599_000, 601_000)],
     )
     monkeypatch.setattr(
-        "drautocut.pipeline.long_asr.extract_audio_segments",
+        "caption_core.pipeline.long_asr.extract_audio_segments",
         lambda source, output_dir, segments: [output_dir / f"part{segment.index}.m4a" for segment in segments],
     )
 
@@ -41,7 +41,7 @@ def test_run_online_long_video_asr_orchestrates_prepare_segment_asr_and_write(
                 progress(100, "done")
             return [Cue(index="1", timing="00:00:00,000 --> 00:00:01,000", lines=[audio_path.stem])]
 
-    monkeypatch.setattr("drautocut.pipeline.long_asr.OnlineAsrTranscriber", FakeTranscriber)
+    monkeypatch.setattr("caption_core.pipeline.long_asr.OnlineAsrTranscriber", FakeTranscriber)
 
     result = run_online_long_video_asr(
         video_path=video,

@@ -1,17 +1,7 @@
 import json
-import sys
 from pathlib import Path
 
-
-MVP_DIR = Path(__file__).resolve().parents[1] / "mvp_pipeline"
-_INSERTED_MVP_DIR = str(MVP_DIR) not in sys.path
-if _INSERTED_MVP_DIR:
-    sys.path.insert(0, str(MVP_DIR))
-
-from term_corrector import builtin_medical_term_normalizations, builtin_unit_normalizations, correct_srt  # noqa: E402
-
-if _INSERTED_MVP_DIR:
-    sys.path.remove(str(MVP_DIR))
+from pipeline.term_corrector import builtin_medical_term_normalizations, builtin_unit_normalizations, correct_srt
 
 
 def test_mvp_correct_srt_normalizes_mmhg_and_reports_unmatched(tmp_path: Path) -> None:

@@ -7,6 +7,12 @@
 .env
 .env.*
 .mcp.json
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+secrets*.json
 
 # Python
 __pycache__/
@@ -15,24 +21,36 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.egg-info/
+build/
+dist/
 
 # Virtual environments
 venv/
 .venv/
-mvp_pipeline/venv/
-davinci-resolve-mcp/
 
 # Pipeline runtime artifacts
-/input/
-mvp_pipeline/input/*
-!mvp_pipeline/input/.gitkeep
-mvp_pipeline/input/uploads/
-mvp_pipeline/work/*
-!mvp_pipeline/work/.gitkeep
-mvp_pipeline/output/*
-!mvp_pipeline/output/.gitkeep
-mvp_pipeline/logs/*
-!mvp_pipeline/logs/.gitkeep
+data/input/*
+!data/input/.gitkeep
+data/input/uploads/
+data/work/*
+!data/work/.gitkeep
+data/work/web_config.json
+data/work/knowledge_base/
+data/work/medical_knowledge.json
+data/knowledge_base/
+data/medical_knowledge.json
+data/output/*
+!data/output/.gitkeep
+data/logs/*
+!data/logs/.gitkeep
+*.log
+
+# Third-party reference projects are kept locally, not vendored into git.
+vendor/
 
 # Media and generated subtitle artifacts
 *.mp4
@@ -45,5 +63,5 @@ mvp_pipeline/logs/*
 *.jsonl
 
 # Keep source/config JSON files explicit rather than generated reports
-!mvp_pipeline/terms.sample.json
-!mvp_pipeline/subtitle_style_sub01.json
+!resources/terms.sample.json
+!resources/subtitle_style_sub01.json

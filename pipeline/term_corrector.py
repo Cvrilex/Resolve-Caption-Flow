@@ -12,9 +12,10 @@ from pathlib import Path
 from typing import Any
 
 
-ROOT = Path(__file__).resolve().parent
-DEFAULT_TERMS = ROOT / "terms.sample.json"
-DEFAULT_WORK_DIR = ROOT / "work"
+PIPELINE_DIR = Path(__file__).resolve().parent
+REPO_ROOT = PIPELINE_DIR.parent
+DEFAULT_TERMS = REPO_ROOT / "resources" / "terms.sample.json"
+DEFAULT_WORK_DIR = REPO_ROOT / "data" / "work"
 
 
 @dataclass(frozen=True)

@@ -4,11 +4,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from drautocut.domain.srt import Cue, write_srt
-from drautocut.integrations.ffmpeg import detect_silences, extract_audio_segments, probe_media
-from drautocut.integrations.online_asr import OnlineAsrTranscriber
-from drautocut.pipeline.asr import build_segment_tasks, run_segmented_asr
-from drautocut.pipeline.segments import (
+from caption_core.domain.srt import Cue, write_srt
+from caption_core.integrations.ffmpeg import detect_silences, extract_audio_segments, probe_media
+from caption_core.integrations.online_asr import OnlineAsrTranscriber
+from caption_core.pipeline.asr import build_segment_tasks, run_segmented_asr
+from caption_core.pipeline.segments import (
     DEFAULT_MAX_SEGMENT_MS,
     DEFAULT_MIN_SEGMENT_MS,
     DEFAULT_SILENCE_WINDOW_MS,

@@ -1,8 +1,8 @@
 import json
 
-from drautocut.domain.srt import Cue
-from drautocut.domain.terms import Replacement
-from drautocut.pipeline.review import (
+from caption_core.domain.srt import Cue
+from caption_core.domain.terms import Replacement
+from caption_core.pipeline.review import (
     approved_replacements_from_rows,
     build_term_review_payload,
     build_term_review_rows,

@@ -14,8 +14,8 @@
 - Store every segment with `start_ms`, `end_ms`, `offset_ms`, and duration.
 - Each segment can be sent to online ASR or local ASR independently.
 - After ASR, segment-level SRT cues are offset back to full-video time and merged.
-- `drautocut.integrations.ffmpeg` provides duration probing, silence detection, and audio segment extraction.
-- `drautocut.pipeline.asr` emits segment-level progress events for the Web panel: `running`, `segment_running`, `segment_progress`, `segment_done`, `segment_failed`, `failed`, and `done`.
+- `caption_core.integrations.ffmpeg` provides duration probing, silence detection, and audio segment extraction.
+- `caption_core.pipeline.asr` emits segment-level progress events for the Web panel: `running`, `segment_running`, `segment_progress`, `segment_done`, `segment_failed`, `failed`, and `done`.
 
 ## Concurrency Policy
 
@@ -37,6 +37,6 @@
 - Keep online ASR adapters as the stable baseline.
 - Add a local adapter behind the same interface.
 - First local candidates:
-  - FunASR / SenseVoice for Chinese medical courses.
+  - FunASR / SenseVoice for Chinese professional videos, including medical courses as one example.
   - faster-whisper as a mature fallback with strong timestamp behavior.
 - Compare on 5-10 minute samples before switching production defaults.

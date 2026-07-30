@@ -1,7 +1,7 @@
 import pytest
 
-from drautocut.domain.srt import Cue
-from drautocut.pipeline.segments import (
+from caption_core.domain.srt import Cue
+from caption_core.pipeline.segments import (
     SegmentPlanError,
     merge_segment_cues,
     offset_timing,

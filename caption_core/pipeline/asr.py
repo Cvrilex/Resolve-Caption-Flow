@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol, Sequence
 
-from drautocut.domain.srt import Cue
-from drautocut.pipeline.segments import MediaSegment, merge_segment_cues
+from caption_core.domain.srt import Cue
+from caption_core.pipeline.segments import MediaSegment, merge_segment_cues
 
 
 ProgressCallback = Callable[[dict[str, Any]], None]

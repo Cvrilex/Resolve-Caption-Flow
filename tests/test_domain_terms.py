@@ -1,5 +1,5 @@
-from drautocut.domain.srt import Cue
-from drautocut.domain.terms import (
+from caption_core.domain.srt import Cue
+from caption_core.domain.terms import (
     Replacement,
     apply_replacements,
     builtin_unit_normalizations,

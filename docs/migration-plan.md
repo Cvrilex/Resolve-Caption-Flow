@@ -1,52 +1,45 @@
-# MVP To Product Migration Plan
+# Directory Migration Plan
 
-## Why Keep `mvp_pipeline/`
+## Current Decision
 
-`mvp_pipeline/` is the proven closed-loop prototype. It should remain runnable
-until the product package reaches feature parity. Moving or renaming it now would
-risk breaking a working workflow.
+The old `mvp_pipeline/` prototype directory has been retired as the main
+development entry. Proven code now lives in shallow, responsibility-oriented
+top-level folders.
 
 ## Target Structure
 
 ```text
-src/drautocut/
-  domain/         pure models and subtitle/term transformations
-  integrations/   ASR, LLM, PDF, Resolve adapters
-  pipeline/       job orchestration and resumability
-  storage/        artifact paths, logs, job history
-  web/            FastAPI panel
+app/            WebUI and local FastAPI service
+pipeline/       caption production, terminology, cleanup, and LLM review
+integrations/   online ASR and external service adapters
+caption_core/       reusable domain models and package-style modules
+resources/      Resolve template, subtitle styles, sample resources
+data/           inputs, work artifacts, outputs, logs, knowledge base
+docs/           business workflow and technical records
+tests/          automated checks
+scripts/        helper scripts
+vendor/         third-party reference projects
 ```
 
-## Migration Order
+## Migration Status
 
-1. Move pure subtitle and terminology logic first.
-   - Source: `mvp_pipeline/term_corrector.py`
-   - Source: `mvp_pipeline/subtitle_optimizer.py`
-   - Target: `drautocut.domain`
+1. Web server moved to `app/web_server.py`.
+2. Static WebUI moved to `app/web/`.
+3. Core pipeline moved to `pipeline/caption_pipeline.py`.
+4. Terminology and subtitle tools moved to `pipeline/`.
+5. Online ASR adapters moved to `integrations/online_asr.py`.
+6. Resolve template and style resources moved to `resources/`.
+7. Runtime input, work, output, and log folders moved to `data/`.
+8. Third-party reference projects moved to `vendor/`.
+9. Reusable package modules moved to root-level `caption_core/`.
 
-2. Introduce job state and artifact storage.
-   - Target: `drautocut.pipeline`
-   - Target: `drautocut.storage`
-   - Goal: make every step restartable without rerunning ASR.
-
-3. Wrap external services behind adapters.
-   - ASR adapter for `tool/online_asr.py`
-   - LLM adapter for OpenAI-compatible APIs and LM Studio
-   - Resolve adapter for template import and render preset handling
-
-4. Rebuild the web panel on the product package.
-   - Keep the current MVP panel as a reference.
-   - Add job history, step retry, and terminology impact preview.
-
-5. Retire `mvp_pipeline/` only after the product path runs the same end-to-end
-   workflow successfully.
+Third-party folders under `vendor/` keep their original internal structure.
 
 ## Next Feature
 
-Build terminology impact preview:
+Continue product work on terminology impact preview:
 
 - for every candidate replacement, list affected cues
 - show original and preview text
 - allow per-term approval before correction
 - support continuing without terminology correction
-

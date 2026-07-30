@@ -15,14 +15,40 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
 
-from subtitle_optimizer import (
-    canonical_content,
-    interpolate_timestamps,
-    merge_short_segments,
-    repair_protected_term_boundaries,
-    visible_len,
-)
-from term_corrector import Cue, parse_srt, write_srt
+try:  # Supports both package imports and direct script execution.
+    from .subtitle_optimizer import (
+        build_messages as build_overlong_split_messages,
+        build_short_window_messages,
+        canonical_content,
+        clean_subtitle_text,
+        enforce_max_chars,
+        greedy_split,
+        interpolate_timestamps,
+        merge_hanging_value_connector_cues,
+        merge_short_segments,
+        normalize_segments_payload,
+        repair_hanging_value_connectors,
+        repair_protected_term_boundaries,
+        visible_len,
+    )
+    from .term_corrector import Cue, parse_srt, write_srt
+except ImportError:  # pragma: no cover - direct script execution path
+    from subtitle_optimizer import (
+        build_messages as build_overlong_split_messages,
+        build_short_window_messages,
+        canonical_content,
+        clean_subtitle_text,
+        enforce_max_chars,
+        greedy_split,
+        interpolate_timestamps,
+        merge_hanging_value_connector_cues,
+        merge_short_segments,
+        normalize_segments_payload,
+        repair_hanging_value_connectors,
+        repair_protected_term_boundaries,
+        visible_len,
+    )
+    from term_corrector import Cue, parse_srt, write_srt
 
 
 class LLMTermReviewError(RuntimeError):
@@ -370,9 +396,146 @@ def apply_patches(cues: list[Cue], patches: list[CuePatch], allowed_cues: set[in
     return applied, rejected
 
 
+UNIT_REVIEW_CONTEXT_RE = re.compile(
+    r"(耐药率|敏感率|检出率|死亡率|发生率|有效率|比例|占到|达到|以内|不到|高于|低于|超过|小于|大于|左右)"
+)
+BARE_PERCENT_NUMBER_RE = re.compile(r"(?<![\d.])([1-9]?\d|100)(?![\d.%％])")
+UNIT_REVIEW_SKIP_AFTER_RE = re.compile(r"^(?:年|月|日|例|种|位|个|天|小时|分钟|秒|岁|次|毫克|mg|g|kg|ml|l|mmhg|mmol|μmol|umol|q\d|h)")
+
+
+def needs_unit_review_window(cues: list[Cue], position: int) -> bool:
+    text = cue_text(cues[position])
+    if not BARE_PERCENT_NUMBER_RE.search(text):
+        return False
+    for match in BARE_PERCENT_NUMBER_RE.finditer(text):
+        after = text[match.end() : match.end() + 8].strip().lower()
+        number = int(match.group(1))
+        if number > 100 or UNIT_REVIEW_SKIP_AFTER_RE.match(after):
+            continue
+        start_idx = max(0, position - 2)
+        end_idx = min(len(cues), position + 3)
+        context = " ".join(cue_text(cue) for cue in cues[start_idx:end_idx])
+        if UNIT_REVIEW_CONTEXT_RE.search(context):
+            return True
+    return False
+
+
+def build_unit_review_messages(cues: list[Cue], position: int, terms_summary: str, system_prompt: str = "") -> list[dict[str, str]]:
+    system = system_prompt.strip() or (
+        "你是医疗课程字幕数值单位复核助手。只输出 JSON。"
+        "只检查当前字幕是否漏写明确单位，例如百分号%、mg、mmHg、q12h。"
+    )
+    start_idx = max(0, position - 2)
+    end_idx = min(len(cues), position + 3)
+    rows: list[str] = []
+    for idx in range(start_idx, end_idx):
+        marker = "EDIT" if idx == position else "CTX"
+        rows.append(f"[{marker}] {cues[idx].index}: {cue_text(cues[idx])}")
+    user = f"""
+请只复核标记为 EDIT 的字幕是否漏写数值单位。CTX 只作为上下文。
+
+用户确认课程术语表：
+{terms_summary}
+
+输出 JSON：
+{{
+  "patches": [
+    {{
+      "cue": {cues[position].index},
+      "old": "字幕中的原文片段",
+      "new": "补充单位后的片段",
+      "reason": "为什么上下文能确定缺少该单位",
+      "confidence": "high|medium|low"
+    }}
+  ]
+}}
+
+规则：
+- 只能修改 EDIT 这一条字幕。
+- old 必须是 EDIT 字幕中连续出现的原文片段。
+- 只在上下文明确显示是百分比、剂量、浓度、血压或给药频次时补单位。
+- 不要把年份、数量、序号、课程编号、药物种类数误改成百分比。
+- 不能改写句子，不能补不存在的数字，不能删除文字。
+- 没有高把握就返回空数组。
+
+字幕：
+{chr(10).join(rows)}
+""".strip()
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def review_numeric_unit_windows(
+    cues: list[Cue],
+    terms_summary: str,
+    model: str,
+    base_url: str,
+    api_key: str,
+    timeout: int,
+    system_prompt: str = "",
+    use_llm: bool = True,
+    fallback_on_llm_error: bool = True,
+    max_windows: int = 40,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not use_llm or not api_key:
+        return [], []
+    candidate_positions = [
+        idx for idx in range(len(cues)) if needs_unit_review_window(cues, idx)
+    ][:max_windows]
+    if progress_callback:
+        progress_callback({
+            "status": "planned",
+            "message": "numeric unit review windows planned",
+            "window_count": len(candidate_positions),
+        })
+    applied_all: list[dict[str, Any]] = []
+    rejected_all: list[dict[str, Any]] = []
+    for window_index, position in enumerate(candidate_positions, start=1):
+        cue = cues[position]
+        if progress_callback:
+            progress_callback({
+                "status": "progress",
+                "message": "reviewing numeric unit window",
+                "current": window_index,
+                "total": len(candidate_positions),
+                "cue": cue.index,
+                "percent": round(window_index * 100 / max(1, len(candidate_positions))),
+            })
+        try:
+            raw = chat_completion(
+                build_unit_review_messages(cues, position, terms_summary, system_prompt=system_prompt),
+                model=model,
+                base_url=base_url,
+                api_key=api_key,
+                timeout=timeout,
+            )
+            patches = normalize_patches(raw)
+            allowed = {int(cue.index)} if str(cue.index).isdigit() else set()
+            applied, rejected = apply_patches(cues, patches, allowed)
+            applied_all.extend(applied)
+            rejected_all.extend(rejected)
+        except Exception as exc:
+            rejected_all.append({
+                "cue": cue.index,
+                "timing": cue.timing,
+                "before": cue_text(cue),
+                "reason_rejected": "unit_review_error",
+                "error": str(exc),
+            })
+            if not fallback_on_llm_error:
+                raise
+    return applied_all, rejected_all
+
+
 def _cue_start_end(cue: Cue) -> tuple[str, str]:
     start, end = cue.timing.split(" --> ")
     return start.strip(), end.strip()
+
+
+def _ts_to_ms(ts: str) -> int:
+    h, m, rest = ts.split(":")
+    s, ms = rest.split(",")
+    return int(h) * 3600000 + int(m) * 60000 + int(s) * 1000 + int(ms)
 
 
 def _segments_preserve_window_text(original_segments: list[str], candidate_segments: list[str]) -> bool:
@@ -471,6 +634,282 @@ def apply_reflows(
     return rebuilt, applied, rejected
 
 
+def split_residual_overlong_cues(
+    cues: list[Cue],
+    max_chars: int,
+    model: str,
+    base_url: str,
+    api_key: str,
+    timeout: int,
+    use_llm: bool = True,
+    fallback_on_llm_error: bool = True,
+) -> tuple[list[Cue], list[dict[str, Any]], list[dict[str, Any]]]:
+    rebuilt: list[Cue] = []
+    changes: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for position, cue in enumerate(cues):
+        text = cue_text(cue)
+        if visible_len(text) <= max_chars:
+            rebuilt.append(cue)
+            continue
+
+        method = "local_fallback"
+        error_text = ""
+        prev_text = cue_text(cues[position - 1]) if position > 0 else ""
+        next_text = cue_text(cues[position + 1]) if position + 1 < len(cues) else ""
+        if use_llm and api_key:
+            try:
+                raw = chat_completion(
+                    build_overlong_split_messages(prev_text, text, next_text, max_chars, allow_neighbor_rewrite=False),
+                    model=model,
+                    base_url=base_url,
+                    api_key=api_key,
+                    timeout=timeout,
+                )
+                segments = normalize_segments_payload(raw, text)
+                if not _segments_preserve_window_text([text], segments):
+                    raise LLMTermReviewError("LLM residual overlong split changed, added, or removed subtitle text")
+                segments = enforce_max_chars(repair_protected_term_boundaries(segments), max_chars)
+                method = "llm"
+            except Exception as exc:
+                if not fallback_on_llm_error:
+                    raise
+                error_text = str(exc)
+                errors.append({
+                    "cue": cue.index,
+                    "timing": cue.timing,
+                    "error": error_text,
+                    "fallback": "local_split",
+                })
+                segments = enforce_max_chars(repair_protected_term_boundaries(greedy_split(text, max_chars)), max_chars)
+        else:
+            segments = enforce_max_chars(repair_protected_term_boundaries(greedy_split(text, max_chars)), max_chars)
+
+        if len(segments) <= 1:
+            rebuilt.append(cue)
+            continue
+        start_ts, end_ts = _cue_start_end(cue)
+        timings = interpolate_timestamps(start_ts, end_ts, segments)
+        changes.append({
+            "cue": cue.index,
+            "timing": cue.timing,
+            "before": text,
+            "after": segments,
+            "segment_lengths": [visible_len(segment) for segment in segments],
+            "method": method,
+            **({"error": error_text} if error_text else {}),
+        })
+        for segment, (segment_start, segment_end) in zip(segments, timings):
+            rebuilt.append(Cue(index="", timing=f"{segment_start} --> {segment_end}", lines=[segment]))
+
+    if changes:
+        for index, cue in enumerate(rebuilt, start=1):
+            cue.index = str(index)
+    return rebuilt, changes, errors
+
+
+def clean_final_cues(
+    cues: list[Cue],
+    punctuation: str,
+    fillers: tuple[str, ...],
+    comma_as_space: bool,
+) -> tuple[list[Cue], list[dict[str, Any]]]:
+    cleaned: list[Cue] = []
+    changes: list[dict[str, Any]] = []
+    for cue in cues:
+        before = cue_text(cue)
+        after = clean_subtitle_text(before, punctuation, fillers, comma_as_space=comma_as_space)
+        cleaned.append(Cue(index=cue.index, timing=cue.timing, lines=[after] if after else [""]))
+        if before != after:
+            changes.append({
+                "cue": cue.index,
+                "timing": cue.timing,
+                "before": before,
+                "after": after,
+            })
+    return cleaned, changes
+
+
+SYMBOL_END_RE = re.compile(r"[^\w\u4e00-\u9fff）)]$")
+
+
+def has_symbol_ending(text: str) -> bool:
+    return bool(SYMBOL_END_RE.search(text.strip()))
+
+
+def repair_symbol_ending_windows(
+    cues: list[Cue],
+    min_chars: int,
+    max_chars: int,
+    model: str,
+    base_url: str,
+    api_key: str,
+    timeout: int,
+    punctuation: str,
+    fillers: tuple[str, ...],
+    comma_as_space: bool,
+    use_llm: bool = True,
+    fallback_on_llm_error: bool = True,
+) -> tuple[list[Cue], list[dict[str, Any]], list[dict[str, Any]]]:
+    if not use_llm or not api_key:
+        return cues, [], []
+
+    accepted: list[tuple[int, int, list[str], list[str]]] = []
+    changes: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    used_positions: set[int] = set()
+    issue_positions = [idx for idx, cue in enumerate(cues) if has_symbol_ending(cue_text(cue))]
+
+    for issue_idx in issue_positions:
+        start_idx = max(0, issue_idx - 2)
+        end_idx = min(len(cues) - 1, issue_idx + 2)
+        positions = set(range(start_idx, end_idx + 1))
+        if positions & used_positions:
+            continue
+        window_cues = cues[start_idx : end_idx + 1]
+        before_texts = [cue_text(cue) for cue in window_cues]
+        try:
+            raw = chat_completion(
+                build_short_window_messages(
+                    [(int(cue.index) if str(cue.index).isdigit() else start_idx + offset + 1, cue_text(cue)) for offset, cue in enumerate(window_cues)],
+                    min_chars,
+                    max_chars,
+                ),
+                model=model,
+                base_url=base_url,
+                api_key=api_key,
+                timeout=timeout,
+            )
+            segments = normalize_segments_payload(raw, " ".join(before_texts))
+            segments = [
+                cleaned
+                for cleaned in (
+                    clean_subtitle_text(segment, punctuation, fillers, comma_as_space=comma_as_space)
+                    for segment in segments
+                )
+                if cleaned
+            ]
+            segments = repair_hanging_value_connectors(repair_protected_term_boundaries(segments), max_chars)
+            segments = merge_short_segments(segments, min_chars=min_chars, max_chars=max_chars)
+            if not segments or not _segments_preserve_window_text(before_texts, segments):
+                raise LLMTermReviewError("LLM symbol-ending window output changed, added, or removed subtitle text")
+        except Exception as exc:
+            errors.append({
+                "cue": cues[issue_idx].index,
+                "timing": cues[issue_idx].timing,
+                "window_start_cue": window_cues[0].index,
+                "window_end_cue": window_cues[-1].index,
+                "error": str(exc),
+                "fallback": "keep_window",
+            })
+            if not fallback_on_llm_error:
+                raise
+            continue
+
+        if segments == before_texts:
+            continue
+        used_positions.update(positions)
+        accepted.append((start_idx, end_idx, before_texts, segments))
+        changes.append({
+            "cue": cues[issue_idx].index,
+            "timing": cues[issue_idx].timing,
+            "window_start_cue": window_cues[0].index,
+            "window_end_cue": window_cues[-1].index,
+            "before": before_texts,
+            "after": segments,
+            "segment_lengths": [visible_len(segment) for segment in segments],
+        })
+
+    if not accepted:
+        return cues, changes, errors
+
+    rebuilt: list[Cue] = []
+    cursor = 0
+    for start_idx, end_idx, _before_texts, segments in accepted:
+        while cursor < start_idx:
+            rebuilt.append(cues[cursor])
+            cursor += 1
+        start_ts, _ = _cue_start_end(cues[start_idx])
+        _, end_ts = _cue_start_end(cues[end_idx])
+        timings = interpolate_timestamps(start_ts, end_ts, segments)
+        for segment, (segment_start, segment_end) in zip(segments, timings):
+            rebuilt.append(Cue(index="", timing=f"{segment_start} --> {segment_end}", lines=[segment]))
+        cursor = end_idx + 1
+    while cursor < len(cues):
+        rebuilt.append(cues[cursor])
+        cursor += 1
+
+    for number, cue in enumerate(rebuilt, start=1):
+        cue.index = str(number)
+    return rebuilt, changes, errors
+
+
+def merge_residual_short_cues(
+    cues: list[Cue],
+    min_chars: int,
+    max_chars: int,
+    max_gap_ms: int = 700,
+) -> tuple[list[Cue], list[dict[str, Any]]]:
+    rebuilt = list(cues)
+    changes: list[dict[str, Any]] = []
+    index = 0
+    while index < len(rebuilt):
+        cue = rebuilt[index]
+        text = cue_text(cue)
+        if not text or visible_len(text) >= min_chars:
+            index += 1
+            continue
+
+        start_ts, end_ts = _cue_start_end(cue)
+        candidates: list[tuple[int, int, str, str, str, str]] = []
+        if index > 0:
+            prev = rebuilt[index - 1]
+            prev_start, prev_end = _cue_start_end(prev)
+            gap = _ts_to_ms(start_ts) - _ts_to_ms(prev_end)
+            combined = f"{cue_text(prev)}{text}"
+            if 0 <= gap <= max_gap_ms and visible_len(combined) <= max_chars:
+                candidates.append((gap, 0, "previous", combined, prev_start, end_ts))
+        if index + 1 < len(rebuilt):
+            next_cue = rebuilt[index + 1]
+            next_start, next_end = _cue_start_end(next_cue)
+            gap = _ts_to_ms(next_start) - _ts_to_ms(end_ts)
+            combined = f"{text}{cue_text(next_cue)}"
+            prefer_next = -1 if visible_len(text) <= 1 else 1
+            if 0 <= gap <= max_gap_ms and visible_len(combined) <= max_chars:
+                candidates.append((gap, prefer_next, "next", combined, start_ts, next_end))
+        if not candidates:
+            index += 1
+            continue
+
+        _gap, _preference, direction, combined_text, merged_start, merged_end = min(candidates, key=lambda item: (item[0], item[1]))
+        if direction == "previous":
+            prev = rebuilt[index - 1]
+            before = [cue_text(prev), text]
+            rebuilt[index - 1] = Cue(index="", timing=f"{merged_start} --> {merged_end}", lines=[combined_text])
+            del rebuilt[index]
+            changed_position = max(0, index - 1)
+        else:
+            next_cue = rebuilt[index + 1]
+            before = [text, cue_text(next_cue)]
+            rebuilt[index] = Cue(index="", timing=f"{merged_start} --> {merged_end}", lines=[combined_text])
+            del rebuilt[index + 1]
+            changed_position = index
+        changes.append({
+            "cue_position": index + 1,
+            "direction": direction,
+            "before": before,
+            "after": combined_text,
+            "timing": f"{merged_start} --> {merged_end}",
+            "length": visible_len(combined_text),
+        })
+        index = changed_position
+
+    if changes:
+        for number, cue in enumerate(rebuilt, start=1):
+            cue.index = str(number)
+    return rebuilt, changes
+
+
 def review_srt_terms(
     srt: Path,
     output: Path,
@@ -487,6 +926,9 @@ def review_srt_terms(
     timeout: int = 45,
     use_llm: bool = True,
     fallback_on_llm_error: bool = True,
+    punctuation: str = "",
+    fillers: tuple[str, ...] = (),
+    comma_as_space: bool = True,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     cues = parse_srt(srt)
@@ -573,7 +1015,66 @@ def review_srt_terms(
         max_chars=max_chars,
     )
     rejected_reflows.extend(post_rejected_reflows)
+    numeric_unit_patches, numeric_unit_rejected = review_numeric_unit_windows(
+        cues,
+        terms_summary=terms_summary,
+        model=model,
+        base_url=base_url,
+        api_key=api_key,
+        timeout=timeout,
+        system_prompt=system_prompt,
+        use_llm=use_llm,
+        fallback_on_llm_error=fallback_on_llm_error,
+        progress_callback=progress_callback,
+    )
+    applied_all.extend(numeric_unit_patches)
+    rejected_all.extend(numeric_unit_rejected)
 
+    cues, residual_overlong_splits, residual_overlong_errors = split_residual_overlong_cues(
+        cues,
+        max_chars=max_chars,
+        model=model,
+        base_url=base_url,
+        api_key=api_key,
+        timeout=timeout,
+        use_llm=use_llm,
+        fallback_on_llm_error=fallback_on_llm_error,
+    )
+    errors.extend(residual_overlong_errors)
+    cues, final_cleanup_changes = clean_final_cues(
+        cues,
+        punctuation=punctuation,
+        fillers=fillers,
+        comma_as_space=comma_as_space,
+    )
+    cues, hanging_value_merges = merge_hanging_value_connector_cues(cues, max_chars=max_chars)
+    cues, symbol_ending_repairs, symbol_ending_errors = repair_symbol_ending_windows(
+        cues,
+        min_chars=min_chars,
+        max_chars=max_chars,
+        model=model,
+        base_url=base_url,
+        api_key=api_key,
+        timeout=timeout,
+        punctuation=punctuation,
+        fillers=fillers,
+        comma_as_space=comma_as_space,
+        use_llm=use_llm,
+        fallback_on_llm_error=fallback_on_llm_error,
+    )
+    errors.extend(symbol_ending_errors)
+    cues, post_symbol_cleanup_changes = clean_final_cues(
+        cues,
+        punctuation=punctuation,
+        fillers=fillers,
+        comma_as_space=comma_as_space,
+    )
+    final_cleanup_changes.extend(post_symbol_cleanup_changes)
+    cues, residual_short_merges = merge_residual_short_cues(
+        cues,
+        min_chars=min_chars,
+        max_chars=max_chars,
+    )
     residual_short_count = sum(1 for cue in cues if 0 < visible_len(cue_text(cue)) < min_chars)
     residual_overlong_count = sum(1 for cue in cues if visible_len(cue_text(cue)) > max_chars)
 
@@ -587,17 +1088,36 @@ def review_srt_terms(
         "batch_count": len(batches),
         "min_chars": min_chars,
         "max_chars": max_chars,
+        "removed_punctuation": punctuation,
+        "removed_fillers": list(fillers),
+        "comma_as_space": comma_as_space,
         "applied_patch_count": len(applied_all),
         "rejected_patch_count": len(rejected_all),
         "applied_reflow_count": len(applied_reflows),
         "rejected_reflow_count": len(rejected_reflows),
+        "numeric_unit_patch_count": len(numeric_unit_patches),
+        "numeric_unit_rejected_count": len(numeric_unit_rejected),
         "residual_short_count": residual_short_count,
         "residual_overlong_count": residual_overlong_count,
+        "hanging_value_merge_count": len(hanging_value_merges),
+        "symbol_ending_repair_count": len(symbol_ending_repairs),
+        "symbol_ending_error_count": len(symbol_ending_errors),
+        "residual_short_merge_count": len(residual_short_merges),
+        "final_cleanup_changed_cue_count": len(final_cleanup_changes),
         "error_count": len(errors),
         "applied_patches": applied_all,
         "rejected_patches": rejected_all,
+        "numeric_unit_patches": numeric_unit_patches,
+        "numeric_unit_rejected": numeric_unit_rejected,
         "applied_reflows": applied_reflows,
         "rejected_reflows": rejected_reflows,
+        "residual_overlong_splits": residual_overlong_splits,
+        "residual_overlong_error_count": len(residual_overlong_errors),
+        "hanging_value_merges": hanging_value_merges,
+        "symbol_ending_repairs": symbol_ending_repairs,
+        "symbol_ending_errors": symbol_ending_errors,
+        "residual_short_merges": residual_short_merges,
+        "final_cleanup_changes": final_cleanup_changes,
         "errors": errors,
     }
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -610,6 +1130,15 @@ def review_srt_terms(
             "rejected_patch_count": len(rejected_all),
             "applied_reflow_count": len(applied_reflows),
             "rejected_reflow_count": len(rejected_reflows),
+            "numeric_unit_patch_count": len(numeric_unit_patches),
+            "numeric_unit_rejected_count": len(numeric_unit_rejected),
+            "residual_overlong_split_count": len(residual_overlong_splits),
+            "residual_overlong_error_count": len(residual_overlong_errors),
+            "hanging_value_merge_count": len(hanging_value_merges),
+            "symbol_ending_repair_count": len(symbol_ending_repairs),
+            "symbol_ending_error_count": len(symbol_ending_errors),
+            "residual_short_merge_count": len(residual_short_merges),
+            "final_cleanup_changed_cue_count": len(final_cleanup_changes),
             "residual_short_count": residual_short_count,
             "residual_overlong_count": residual_overlong_count,
             "error_count": len(errors),
@@ -634,6 +1163,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-chars", type=int, default=5)
     parser.add_argument("--max-chars", type=int, default=20)
     parser.add_argument("--timeout", type=int, default=45)
+    parser.add_argument("--remove-punctuation", default="")
+    parser.add_argument(
+        "--remove-fillers",
+        default="",
+        help="Comma/space separated filler words to remove during final cleanup.",
+    )
+    parser.add_argument("--comma-as-space", dest="comma_as_space", action="store_true", default=True)
+    parser.add_argument("--no-comma-as-space", dest="comma_as_space", action="store_false")
     parser.add_argument("--no-llm", action="store_true")
     return parser.parse_args()
 
@@ -658,6 +1195,9 @@ def main() -> int:
         max_chars=args.max_chars,
         timeout=args.timeout,
         use_llm=not args.no_llm,
+        punctuation=args.remove_punctuation,
+        fillers=tuple(word for word in re.split(r"[,，、\s]+", args.remove_fillers.strip()) if word),
+        comma_as_space=args.comma_as_space,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0

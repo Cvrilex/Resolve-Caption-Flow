@@ -5,7 +5,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Callable
 
-from drautocut.domain.srt import Cue, parse_srt_text
+from caption_core.domain.srt import Cue, parse_srt_text
 
 
 class OnlineAsrError(RuntimeError):
@@ -58,7 +58,7 @@ def load_online_asr_module(tool_dir: Path) -> ModuleType:
     if not module_path.exists():
         raise OnlineAsrError(f"online_asr.py not found in {tool_dir}")
 
-    spec = importlib.util.spec_from_file_location("drautocut_external_online_asr", module_path)
+    spec = importlib.util.spec_from_file_location("caption_core_external_online_asr", module_path)
     if spec is None or spec.loader is None:
         raise OnlineAsrError(f"Cannot load online_asr.py from {module_path}")
     module = importlib.util.module_from_spec(spec)

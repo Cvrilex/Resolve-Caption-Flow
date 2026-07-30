@@ -1,8 +1,13 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "drautocut"
+name = "resolve-caption-flow"
 version = "0.1.0"
-description = "Local medical captioning automation for DaVinci Resolve"
-requires-python = ">=3.10"
+description = "A local long-form video subtitle workflow for professional post-production, using LLM-assisted proofreading and private knowledge bases, with FFmpeg-based media processing and DaVinci Resolve–centered final delivery."
+requires-python = ">=3.9"
+license = {text = "MIT"}
 dependencies = [
   "fastapi",
   "python-multipart",
@@ -17,5 +22,8 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["."]
 testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["caption_core*"]

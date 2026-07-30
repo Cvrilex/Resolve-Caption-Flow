@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Sequence
 
-from drautocut.domain.srt import Cue, ms_to_timestamp, split_timing, timestamp_to_ms
+from caption_core.domain.srt import Cue, ms_to_timestamp, split_timing, timestamp_to_ms
 
 
 DEFAULT_TARGET_SEGMENT_MS = 10 * 60 * 1000

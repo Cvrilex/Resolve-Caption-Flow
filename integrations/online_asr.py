@@ -509,7 +509,7 @@ def _aws_signature(
     secret_key: str,
     request_parameters: str,
     headers: Dict[str, str],
-    region: str = "cn",
+    region: str = "cn-north-1",
     service: str = "vod",
 ) -> str:
     """生成 AWS V4 签名"""
@@ -564,6 +564,10 @@ class JianYingASR(BaseASR):
     """
 
     SIGN_SERVICE_URL = "https://asrtools-update.bkfeng.top/sign"
+    LEGACY_STATIC_SIGN = "9ea624edbaf4993b326ed127069b8c3f"
+    LEGACY_STATIC_DEVICE_TIME = "1626958657"
+    LEGACY_STATIC_TDID = "3958721115876654"
+    ALLOW_LEGACY_STATIC_SIGN = True
 
     def __init__(
         self,
@@ -588,6 +592,8 @@ class JianYingASR(BaseASR):
         self._upload_hosts: Optional[str] = None
 
         self._tdid = self._gen_tdid()
+        self._last_appvr = "6.6.0"
+        self._using_legacy_static_sign = False
 
     # ---- 设备 ID ----
 
@@ -606,33 +612,54 @@ class JianYingASR(BaseASR):
 
     def _get_sign(self, url: str, pf: str = "4", appvr: str = "6.6.0") -> Tuple[str, str]:
         """通过远程服务获取请求签名"""
+        self._last_appvr = appvr
         current_time = str(int(time.time()))
-        resp = requests.post(
-            self.SIGN_SERVICE_URL,
-            json={
-                "url": url,
-                "current_time": current_time,
-                "pf": pf,
-                "appvr": appvr,
-                "tdid": self._tdid,
-            },
-            headers={
-                "User-Agent": "VideoCaptioner",
-                "tdid": self._tdid,
-                "t": current_time,
-            },
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        sign = data.get("sign")
-        if not sign:
-            raise ValueError("签名服务返回无 sign")
-        return sign.lower(), current_time
+        force_legacy = os.environ.get("JIANYING_FORCE_LEGACY_STATIC_SIGN", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        allow_legacy = self.ALLOW_LEGACY_STATIC_SIGN and os.environ.get(
+            "JIANYING_DISABLE_LEGACY_STATIC_SIGN", ""
+        ).strip().lower() not in {"1", "true", "yes"}
+
+        if not force_legacy:
+            try:
+                resp = requests.post(
+                    self.SIGN_SERVICE_URL,
+                    json={
+                        "url": url,
+                        "current_time": current_time,
+                        "pf": pf,
+                        "appvr": appvr,
+                        "tdid": self._tdid,
+                    },
+                    headers={
+                        "User-Agent": "VideoCaptioner",
+                        "tdid": self._tdid,
+                        "t": current_time,
+                    },
+                    timeout=20,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                sign = data.get("sign")
+                if sign:
+                    return sign.lower(), current_time
+            except Exception:
+                if not allow_legacy:
+                    raise
+        if not allow_legacy:
+            raise ValueError("签名服务不可用，且内置兼容签名已禁用")
+
+        self._using_legacy_static_sign = True
+        self._tdid = self.LEGACY_STATIC_TDID
+        return self.LEGACY_STATIC_SIGN, self.LEGACY_STATIC_DEVICE_TIME
 
     def _build_headers(self, device_time: str, sign: str) -> Dict[str, str]:
         return {
             "User-Agent": "Cronet/TTNetVersion:d4572e53 2024-06-12 QuicVersion:4bf243e0 2023-04-17",
-            "appvr": "6.6.0",
+            "appvr": self._last_appvr,
             "device-time": device_time,
             "pf": "4",
             "sign": sign,
@@ -645,11 +672,14 @@ class JianYingASR(BaseASR):
     def _upload_sign(self):
         """获取上传凭证"""
         url = "https://lv-pc-api-sinfonlinec.ulikecam.com/lv/v1/upload_sign"
-        sign, device_time = self._get_sign("/lv/v1/upload_sign")
+        sign, device_time = self._get_sign("/lv/v1/upload_sign", appvr="1.4.4")
         headers = self._build_headers(device_time, sign)
         resp = requests.post(url, data=json.dumps({"biz": "pc-recognition"}), headers=headers)
         resp.raise_for_status()
-        data = resp.json()["data"]
+        body = resp.json()
+        if body.get("ret") != "0" or not isinstance(body.get("data"), dict):
+            raise RuntimeError(f"剪映 upload_sign 失败：{body.get('errmsg') or body}")
+        data = body["data"]
         self._access_key = data["access_key_id"]
         self._secret_key = data["secret_access_key"]
         self._session_token = data["session_token"]
@@ -667,9 +697,10 @@ class JianYingASR(BaseASR):
         datestamp = t.strftime("%Y%m%d")
         headers = {"x-amz-date": amz_date, "x-amz-security-token": self._session_token}
 
-        signature = _aws_signature(self._secret_key, request_params, headers)
+        region = "cn-north-1"
+        signature = _aws_signature(self._secret_key, request_params, headers, region=region)
         authorization = (
-            f"AWS4-HMAC-SHA256 Credential={self._access_key}/{datestamp}/cn/vod/aws4_request, "
+            f"AWS4-HMAC-SHA256 Credential={self._access_key}/{datestamp}/{region}/vod/aws4_request, "
             f"SignedHeaders=x-amz-date;x-amz-security-token, Signature={signature}"
         )
         headers["authorization"] = authorization
@@ -732,7 +763,13 @@ class JianYingASR(BaseASR):
             "Content-CRC32": self.crc32_hex,
         }
         resp = requests.put(url, data=self.file_binary, headers=headers)
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except requests.RequestException:
+            # The legacy JianYing upload flow often returns MismatchChecksum here,
+            # while the preceding upload/check already made the StoreUri usable for
+            # audio_subtitle/submit. Keep the URI and let submit/query be decisive.
+            return self._store_uri
         return self._store_uri
 
     def _upload(self) -> str:

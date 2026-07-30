@@ -1,17 +1,7 @@
 import json
-import sys
 from pathlib import Path
 
-
-MVP_DIR = Path(__file__).resolve().parents[1] / "mvp_pipeline"
-_INSERTED_MVP_DIR = str(MVP_DIR) not in sys.path
-if _INSERTED_MVP_DIR:
-    sys.path.insert(0, str(MVP_DIR))
-
-import subtitle_optimizer  # noqa: E402
-
-if _INSERTED_MVP_DIR:
-    sys.path.remove(str(MVP_DIR))
+from pipeline import subtitle_optimizer
 
 
 def _write_srt(path: Path, texts: list[str]) -> None:
@@ -32,22 +22,51 @@ def _write_srt(path: Path, texts: list[str]) -> None:
 
 
 def test_parse_filler_words_accepts_webui_formats() -> None:
-    assert subtitle_optimizer.parse_filler_words("嗯,呃，啊、那个 这个\n然后") == (
+    assert subtitle_optimizer.parse_filler_words("嗯,呃，啊、呢 这个\n然后") == (
         "嗯",
         "呃",
         "啊",
-        "那个",
+        "呢",
         "这个",
         "然后",
     )
     assert subtitle_optimizer.parse_filler_words("") == ()
 
 
+def test_clean_punctuation_can_convert_commas_to_spaces_and_remove_periods() -> None:
+    assert (
+        subtitle_optimizer.clean_punctuation("体位方面，应该取坐姿测量。", "。", comma_as_space=True)
+        == "体位方面 应该取坐姿测量"
+    )
+
+
+def test_weighted_visible_len_counts_digits_and_symbols_as_half() -> None:
+    assert subtitle_optimizer.visible_len("≥160/") == 2.5
+
+
+def test_clean_subtitle_text_preserves_medical_value_connectors() -> None:
+    assert subtitle_optimizer.clean_subtitle_text("也就是140~159/", "。") == "也就是140~159/"
+    assert subtitle_optimizer.clean_subtitle_text("≥160/", "。") == "≥160/"
+    assert subtitle_optimizer.clean_subtitle_text("、靶器官损害", "。") == "靶器官损害"
+    assert subtitle_optimizer.clean_subtitle_text("140/90mmHg", "。") == "140/90mmHg"
+
+
+def test_repair_hanging_value_connectors_merges_blood_pressure_range() -> None:
+    assert subtitle_optimizer.repair_hanging_value_connectors(
+        ["也就是140~159/", "90~99mmHg的高血压"],
+        max_chars=20,
+    ) == ["也就是140~159/90~99mmHg的高血压"]
+    assert subtitle_optimizer.repair_hanging_value_connectors(
+        ["≥160/", "100mmHg的高血压患者"],
+        max_chars=20,
+    ) == ["≥160/100mmHg的高血压患者"]
+
+
 def test_optimizer_removes_filler_words_during_text_cleanup(tmp_path: Path) -> None:
     source = tmp_path / "fillers.srt"
     output = tmp_path / "out.srt"
     report = tmp_path / "report.json"
-    _write_srt(source, ["嗯因为硝普钠是首选药物", "呃我们要做一个小结", "啊这里需要注意"])
+    _write_srt(source, ["嗯因为硝普钠是首选药物", "呃我们要做一个小结", "啊这里需要注意", "那硝苯地平呢"])
 
     subtitle_optimizer.optimize_srt(
         srt=source,
@@ -66,9 +85,62 @@ def test_optimizer_removes_filler_words_during_text_cleanup(tmp_path: Path) -> N
     assert "嗯" not in rendered
     assert "呃" not in rendered
     assert "啊" not in rendered
+    assert "呢" not in rendered
     assert "因为硝普钠是首选药物" in rendered
     assert "我们要做一个小结" in rendered
     assert "这里需要注意" in rendered
+    assert "那硝苯地平" in rendered
+
+
+def test_local_overlong_split_protects_risk_factor_term_and_cleans_edges(tmp_path: Path) -> None:
+    source = tmp_path / "risk_factor.srt"
+    output = tmp_path / "out.srt"
+    report = tmp_path / "report.json"
+    _write_srt(source, ["根据血压水平、心血管危险因素、靶器官损害、临床并发症"])
+
+    subtitle_optimizer.optimize_srt(
+        srt=source,
+        output=output,
+        report_path=report,
+        max_chars=20,
+        min_chars=5,
+        punctuation="。",
+        model="test-model",
+        base_url="http://127.0.0.1:1234/v1",
+        api_key="local",
+        use_llm=False,
+    )
+
+    rendered = output.read_text(encoding="utf-8")
+    assert "心血管危险因\n" not in rendered
+    assert "素、" not in rendered
+    assert "心血管危险因素" in rendered
+    assert "靶器官损害" in rendered
+
+
+def test_optimizer_merges_adjacent_hanging_blood_pressure_slash(tmp_path: Path) -> None:
+    source = tmp_path / "slash.srt"
+    output = tmp_path / "out.srt"
+    report = tmp_path / "report.json"
+    _write_srt(source, ["也就是140~159/", "90~99mmHg的高血压", "≥160/", "100mmHg的高血压患者"])
+
+    result = subtitle_optimizer.optimize_srt(
+        srt=source,
+        output=output,
+        report_path=report,
+        max_chars=20,
+        min_chars=5,
+        punctuation="。",
+        model="test-model",
+        base_url="http://127.0.0.1:1234/v1",
+        api_key="local",
+        use_llm=False,
+    )
+
+    rendered = output.read_text(encoding="utf-8")
+    assert "也就是140~159/90~99mmHg的高血压" in rendered
+    assert "≥160/100mmHg的高血压患者" in rendered
+    assert result["hanging_value_merge_count"] == 2
 
 
 def test_optimizer_uses_custom_filler_words(tmp_path: Path) -> None:

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
-from drautocut.pipeline.segments import MediaSegment, SilenceRange
+from caption_core.pipeline.segments import MediaSegment, SilenceRange
 
 
 @dataclass(frozen=True)
