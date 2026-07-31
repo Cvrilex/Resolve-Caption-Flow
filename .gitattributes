@@ -1,0 +1,14 @@
+# Store text files consistently in the repository.
+* text=auto eol=lf
+
+# Windows launch scripts need CRLF when checked out.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Keep binary resources unchanged.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.drp binary

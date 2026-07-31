@@ -32,6 +32,9 @@ dist/
 venv/
 .venv/
 
+# Local development notes and temporary artifacts
+temp/
+
 # Pipeline runtime artifacts
 data/input/*
 !data/input/.gitkeep

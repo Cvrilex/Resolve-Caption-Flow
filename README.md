@@ -27,7 +27,9 @@
 
 ### 1. 启动项目
 
-macOS 上双击：
+#### macOS
+
+双击：
 
 ```text
 start_web.command
@@ -35,12 +37,26 @@ start_web.command
 
 首次双击若被 macOS 拦截，请进入“系统设置 → 隐私与安全性”，在“安全性”区域点击“仍要打开”，再使用密码或 Touch ID 验证后打开。
 
-Windows 支持仍在开发中，将在完成实际环境测试后补充。
-
-启动脚本会准备本地 Python 环境并启动 WebUI。也可以手动运行：
+也可以在终端手动运行：
 
 ```bash
 python3 app/web_server.py --host 127.0.0.1 --port 8742
+```
+
+#### Windows
+
+双击：
+
+```text
+start_web.bat
+```
+
+首次启动会创建项目根目录下的 `.venv`，并安装 `requirements.txt` 中的 Python 依赖。首次运行（或尚未保存镜像选择时）脚本会询问是否使用清华 PyPI 镜像：选择“是”使用镜像，选择“否”继续使用官方 PyPI；该选择只保存在本机 `.venv` 内，之后会自动沿用，不会每次启动重复询问。完成后会自动打开浏览器。命令窗口保持打开期间 WebUI 会持续运行，按 Ctrl+C 即可停止服务。
+
+也可以在命令提示符或 PowerShell 中手动运行：
+
+```bash
+python app/web_server.py --host 127.0.0.1 --port 8742
 ```
 
 然后访问：
@@ -58,11 +74,17 @@ ffmpeg -version
 ffprobe -version
 ```
 
+#### macOS
+
 若未安装且使用 Homebrew，可执行：
 
 ```bash
 brew install ffmpeg
 ```
+
+#### Windows
+
+可使用已安装的软件包管理器安装：`winget install Gyan.FFmpeg`、`choco install ffmpeg` 或 `scoop install ffmpeg`。若这些工具均不可用，请从可信 FFmpeg 发行包下载，解压后将其 `bin` 目录加入系统 `PATH`，再重新打开终端确认 `ffmpeg -version` 和 `ffprobe -version` 均可用。
 
 ### 3. 完成首次配置
 
@@ -87,6 +109,30 @@ brew install ffmpeg
 1. 在本机安装并打开 DaVinci Resolve，并在偏好设置中启用 `External scripting: Local`（本地外部脚本权限）。
 2. 在 DaVinci Resolve 中制作包含目标字幕样式的模板工程，保存为 `sub.drp`，并放入项目的 `resources/` 目录。程序固定读取 `resources/sub.drp`。
 3. 在本机 DaVinci Resolve 中保存需要使用的渲染预设，并在项目界面的“达芬奇输出预设名”中填写该预设名称。最终成片导出会调用该预设。
+
+#### 推荐：安装 FFmpeg Encoder Plugin（可选）
+
+如需在 DaVinci Resolve Studio 中使用 FFmpeg 的 H.264、H.265 或 AV1 编码器，推荐安装 [EdvinNilsson/ffmpeg_encoder_plugin](https://github.com/EdvinNilsson/ffmpeg_encoder_plugin)。该插件为可选增强项；本项目的字幕处理不依赖它，但它可为成片导出提供更多编码器选择。
+
+##### macOS 安装步骤
+
+1. 从该项目的 [最新发布包](https://github.com/EdvinNilsson/ffmpeg_encoder_plugin/releases/latest/download/ffmpeg_encoder_plugin.dvcp.bundle.zip) 下载 `ffmpeg_encoder_plugin.dvcp.bundle.zip`，并解压。
+2. 在“终端”中执行下列命令，移除 macOS 对该未公证插件的隔离标记：
+
+   ```bash
+   xattr -rd com.apple.quarantine ffmpeg_encoder_plugin.dvcp.bundle
+   ```
+
+3. 将 `ffmpeg_encoder_plugin.dvcp.bundle` 移至对应目录：独立安装版 DaVinci Resolve 使用 `/Library/Application Support/Blackmagic Design/DaVinci Resolve/IOPlugins/`；Mac App Store 版使用 `~/Library/Containers/com.blackmagic-design.DaVinciResolveAppStore/Data/Library/Application Support/IOPlugins/`。
+4. 完全关闭并重新启动 DaVinci Resolve Studio；随后在交付页面的编码器选项中确认新增的 FFmpeg 编码器。
+
+##### Windows 安装步骤
+
+1. 从该项目的 [最新发布包](https://github.com/EdvinNilsson/ffmpeg_encoder_plugin/releases/latest/download/ffmpeg_encoder_plugin.dvcp.bundle.zip) 下载 `ffmpeg_encoder_plugin.dvcp.bundle.zip`。
+2. 解压压缩包，将解压得到的 `ffmpeg_encoder_plugin.dvcp.bundle` 文件夹复制到 `%ProgramData%\Blackmagic Design\DaVinci Resolve\Support\IOPlugins\`。如目标目录不存在，可自行创建。
+3. 完全关闭并重新启动 DaVinci Resolve Studio；随后在交付页面的编码器选项中确认新增的 FFmpeg 编码器。
+
+插件的版本兼容性、许可和故障排查以其 [官方说明](https://github.com/EdvinNilsson/ffmpeg_encoder_plugin#readme) 为准。
 
 ### 7. 查看最终输出
 
